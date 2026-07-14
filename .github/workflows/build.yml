@@ -1,0 +1,63 @@
+name: Build Desktop Application (Tauri)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest]
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-size: 'large'
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install system dependencies (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          # WiX Toolset is already installed on github runner images, but we make sure setup is complete.
+          echo "Preparing Windows build environment..."
+
+      - name: Install web app dependencies
+        run: npm ci
+
+      - name: Build web application
+        run: npm run build
+
+      - name: Generate Desktop Icons
+        run: node generate-icons.js
+
+      - name: Build Tauri Application
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__ # This will be automatically replaced with the version in tauri.conf.json
+          releaseName: "SQL Flow Visualizer v__VERSION__"
+          releaseBody: "Draft release of SQL Flow Visualizer desktop application."
+          releaseDraft: true
+          prerelease: false
