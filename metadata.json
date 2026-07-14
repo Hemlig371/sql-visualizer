@@ -1,0 +1,6 @@
+{
+  "name": "SQL Visualizer",
+  "description": "Визуализатор потока данных и логики SQL-запросов с использованием AST-парсера и интерактивного графа React Flow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
