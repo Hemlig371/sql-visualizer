@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { Parser } from 'node-sql-parser';
+import pkg from 'node-sql-parser';
+const { Parser } = pkg;
 import dagre from 'dagre';
 
 export interface GraphNode {
@@ -1364,9 +1365,8 @@ export function parseSingleSqlToAst(sql: string, dialect: string): any {
   const cleanSql = sql.trim();
   const cleanSqlNoComments = cleanSql.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').trim();
   const isProcedure = /CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)|DECLARE\b|BEGIN\b/i.test(cleanSqlNoComments);
-
   if (isProcedure) {
-    return { ast: parseHeuristicProcedure(cleanSql, dialect), error: null };
+    return { ast: parseHeuristicProcedure(cleanSqlNoComments, dialect), error: null };
   }
 
   // TRUNCATE query check
