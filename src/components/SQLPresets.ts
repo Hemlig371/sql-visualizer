@@ -8,6 +8,13 @@ export interface SQLPreset {
 
 export const sqlPresets: SQLPreset[] = [
   {
+    id: 'empty-sandbox',
+    title: 'Пустая песочница (Введите ваш SQL)',
+    description: 'Абсолютно чистое рабочее пространство для ввода или вставки любого SQL-скрипта.',
+    dialect: 'PostgreSQL',
+    sql: ''
+  },
+  {
     id: 'postgres-cte-window',
     title: 'PostgreSQL: Аналитика продаж с UNION ALL и оконными функциями',
     description: 'Сложный аналитический запрос, использующий обобщенные табличные выражения (CTE), множественный UNION ALL, группировку и оконную функцию DENSE_RANK() OVER (PARTITION BY ... ORDER BY ...).',
@@ -111,12 +118,5 @@ EXCEPTION
         ROLLBACK;
         RAISE_APPLICATION_ERROR(-20001, 'Audit user suspension failed');
 END;`
-  },
-  {
-    id: 'empty-sandbox',
-    title: 'Пустая песочница (Введите ваш SQL)',
-    description: 'Абсолютно чистое рабочее пространство для ввода или вставки любого SQL-скрипта.',
-    dialect: 'PostgreSQL',
-    sql: ''
   }
 ];
