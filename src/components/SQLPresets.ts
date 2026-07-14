@@ -81,27 +81,6 @@ WHERE val_date >= ADD_MONTHS(SYSDATE, -12);`
     sql: `TRUNCATE TABLE staging_orders, staging_payments, staging_refunds;`
   },
   {
-    id: 'postgres-insert-select-monitoring',
-    title: 'PostgreSQL: TRUNCATE & INSERT INTO ... SELECT (Аналитика мониторинга)',
-    description: 'Реальный сложный аналитический скрипт пользователя, сочетающий быструю очистку TRUNCATE и последующий INSERT INTO без перечисления колонок, извлекающий данные из исходного отчета с приведением типов, округлением и форматированием.',
-    dialect: 'PostgreSQL',
-    sql: `truncate reports."Monitoring_v2";
-
-insert into reports."Monitoring_v2"
-SELECT
-    "Профиль" as "Наименование",
-    "Госпитализации, план" "План, госп",
-    "Госпитализации, факт" "Факт, госп",
-    to_char(round("Госпитализации, факт"::NUMERIC / "Госпитализации, план"::NUMERIC, 2)* 100, '9999%') "% госп",
-    round("Сумма, план"::NUMERIC / 1000000, 4) "План, млн.руб",
-    round("Сумма, факт"::NUMERIC / 1000000, 4) "Факт, млн.руб",
-    to_char(round("Сумма, факт"::NUMERIC / "Сумма, план"::NUMERIC, 2)* 100, '9999%') "% млн.руб",
-    round("Сумма, план"::NUMERIC / "Госпитализации, план"::NUMERIC, 2) AS "Ср. стоимость, план",
-    round("Сумма, факт"::NUMERIC / "Госпитализации, факт"::NUMERIC, 2) AS "Ср. стоимость, факт",
-    date_trunc('month',"Период")::date "Период"
-FROM reports.raw_monitoring;`
-  },
-  {
     id: 'oracle-plsql-procedure',
     title: 'Oracle: PL/SQL хранимая процедура аудита',
     description: 'Хранимая PL/SQL процедура с объявлением переменных, обновлением (UPDATE) и добавлением (INSERT) записей, присвоением значений и блоком исключений (EXCEPTION).',
