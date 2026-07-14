@@ -785,6 +785,10 @@ function parseHeuristicSelect(sql: string, dialect: string): any {
   const orderbyIdx = findTopLevelKeywordIndex(lowerSql, /^\bORDER\s+BY\b/i);
   const limitIdx = findTopLevelKeywordIndex(lowerSql, /^\bLIMIT\b/i);
 
+  if (selectIdx === -1 && fromIdx === -1 && ctes.length === 0) {
+    throw new Error("Not a SELECT query");
+  }
+
   const getBlock = (start: number, end: number) => {
     if (start === -1) return '';
     const actualEnd = end === -1 ? lowerSql.length : end;
@@ -1143,7 +1147,6 @@ export function splitQueries(sql: string): string[] {
       // Check for start of comments
       if (char === '-' && nextChar === '-') {
         inSingleLineComment = true;
-        current += '--';
         i++; // skip second -
         continue;
       }
@@ -1459,12 +1462,74 @@ export function parseSingleSqlToAst(sql: string, dialect: string): any {
     const ast = parseHeuristicSelect(cleanSql, dialect);
     return { ast, error: null };
   } catch (err: any) {
-    return { ast: null, error: err.message || String(err) };
+    return { ast: { type: 'statement', text: cleanSql }, error: err.message || String(err) };
   }
 }
 
+
+export function stripCommentsSafely(sql: string): string {
+  let result = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inSingleLineComment = false;
+  let inMultiLineComment = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i];
+    const nextChar = sql[i + 1] || '';
+
+    if (inSingleLineComment) {
+      if (char === '\n' || char === '\r') {
+        inSingleLineComment = false;
+        result += char;
+      }
+      continue;
+    }
+
+    if (inMultiLineComment) {
+      if (char === '*' && nextChar === '/') {
+        inMultiLineComment = false;
+        result += ' ';
+        i++;
+      }
+      continue;
+    }
+
+    if (inSingleQuote) {
+      if (char === "'" && sql[i-1] !== '\\') inSingleQuote = false;
+      result += char;
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      if (char === '"' && sql[i-1] !== '\\') inDoubleQuote = false;
+      result += char;
+      continue;
+    }
+
+    if (char === '-' && nextChar === '-') {
+      inSingleLineComment = true;
+      i++;
+      continue;
+    }
+
+    if (char === '/' && nextChar === '*') {
+      inMultiLineComment = true;
+      i++;
+      continue;
+    }
+
+    if (char === "'") inSingleQuote = true;
+    if (char === '"') inDoubleQuote = true;
+
+    result += char;
+  }
+  return result.trim();
+}
+
 export function parseSqlToAst(sql: string, dialect: string): any {
-  const cleanSql = sql.trim();
+  const cleanSql = stripCommentsSafely(sql).trim();
+
   const queries = splitQueries(cleanSql);
 
   if (queries.length > 1) {
@@ -1492,7 +1557,7 @@ export function astToGraph(
   prefix = 'main_',
   dialect = 'PostgreSQL',
   cteTableNodeIds: Record<string, string> = {},
-  options: { showSort?: boolean; showLimit?: boolean } = { showSort: true, showLimit: true }
+  options: { showSort?: boolean; showLimit?: boolean; expandedQueries?: Set<string>; onToggleExpand?: (id: string) => void } = { showSort: true, showLimit: true }
 ): { nodes: any[]; edges: any[]; outputId: string } {
   let nodes: any[] = [];
   let edges: any[] = [];
@@ -1501,35 +1566,103 @@ export function astToGraph(
     return { nodes, edges, outputId: '' };
   }
 
+  
   if (ast.type === 'multi_query') {
     let lastOutputId = '';
     ast.queries.forEach((qAst: any, qIdx: number) => {
       const qPrefix = `${prefix}q${qIdx}_`;
-      const qResult = astToGraph(qAst, qPrefix, dialect, cteTableNodeIds, options);
-      nodes.push(...qResult.nodes);
-      edges.push(...qResult.edges);
-
-      if (lastOutputId && qResult.nodes.length > 0) {
-        const firstNode = qResult.nodes.find(n => n.type === 'tableNode') || qResult.nodes[0];
-        edges.push({
-          id: `${prefix}multi_query_link_${qIdx}`,
-          source: lastOutputId,
-          target: firstNode.id,
-          animated: true,
-          label: 'Next Query',
-          style: { stroke: '#64748b', strokeDasharray: '5 5' }
+      const queryId = `${prefix}query_block_${qIdx}`;
+      
+      const isExpanded = options.expandedQueries && options.expandedQueries.has(queryId);
+      
+      if (!isExpanded) {
+        // Collapsed state
+        const title = `Query ${qIdx + 1}`;
+        let snippet = '';
+        if (qAst.type === 'select') snippet = 'SELECT ...';
+        else if (qAst.type === 'insert') snippet = 'INSERT INTO ...';
+        else if (qAst.type === 'update') snippet = 'UPDATE ...';
+        else if (qAst.type === 'delete') snippet = 'DELETE FROM ...';
+        else if (qAst.type === 'statement') snippet = qAst.text || 'STATEMENT';
+        
+        nodes.push({
+          id: queryId,
+          type: 'queryGroupNode',
+          data: {
+            title,
+            queryText: snippet,
+            queryId,
+            onToggle: options.onToggleExpand
+          },
+          position: { x: 0, y: 0 }
         });
-      }
-
-      if (qResult.outputId) {
-        lastOutputId = qResult.outputId;
-      } else if (qResult.nodes.length > 0) {
-        lastOutputId = qResult.nodes[qResult.nodes.length - 1].id;
+        
+        if (lastOutputId) {
+          edges.push({
+            id: `${prefix}multi_query_link_${qIdx}`,
+            source: lastOutputId,
+            target: queryId,
+            animated: true,
+            label: 'Next',
+            style: { stroke: '#64748b', strokeDasharray: '5 5' }
+          });
+        }
+        lastOutputId = queryId;
+      } else {
+        // Expanded state
+        const qResult = astToGraph(qAst, qPrefix, dialect, cteTableNodeIds, options);
+        nodes.push(...qResult.nodes);
+        edges.push(...qResult.edges);
+        
+        // Add a "Collapse" button node or something? Actually, we can just use the first node
+        // or wrap it. But let's just render the nodes and maybe add a "Collapse" node at the start?
+        // Actually, just render normally for now, user can't collapse easily unless we add a button.
+        // Wait, let's add a Collapse node at the start of the query!
+        const collapseId = `${queryId}_collapse`;
+        nodes.push({
+          id: collapseId,
+          type: 'collapseNode',
+          data: {
+            title: `Hide Query ${qIdx + 1}`,
+            queryId: queryId,
+            onToggle: () => options.onToggleExpand?.(queryId)
+          },
+          position: { x: 0, y: 0 }
+        });
+        
+        if (lastOutputId) {
+          edges.push({
+            id: `${prefix}multi_query_link_${qIdx}`,
+            source: lastOutputId,
+            target: collapseId,
+            animated: true,
+            label: 'Next',
+            style: { stroke: '#64748b', strokeDasharray: '5 5' }
+          });
+        }
+        
+        if (qResult.nodes.length > 0) {
+           const firstNode = qResult.nodes.find(n => n.type === 'tableNode' || n.type === 'constantNode') || qResult.nodes[0];
+           edges.push({
+             id: `${prefix}collapse_link_${qIdx}`,
+             source: collapseId,
+             target: firstNode.id,
+             animated: true
+           });
+        }
+        
+        if (qResult.outputId) {
+          lastOutputId = qResult.outputId;
+        } else if (qResult.nodes.length > 0) {
+          lastOutputId = qResult.nodes[qResult.nodes.length - 1].id;
+        } else {
+          lastOutputId = collapseId;
+        }
       }
     });
-
     return { nodes, edges, outputId: lastOutputId };
   }
+
 
   if (Array.isArray(ast)) {
     ast = ast[0];
@@ -1706,41 +1839,98 @@ export function astToGraph(
 
         lastStepId = groupNodeId;
       } else {
+        
         const step = group;
         const stepNodeId = `${prefix}proc_step_${gIdx}`;
 
         if (step.parsedQuery) {
-          const subResult = astToGraph(step.parsedQuery, `${prefix}step_${gIdx}_`, dialect, currentCteTableNodeIds, options);
-          nodes.push(...subResult.nodes);
-          edges.push(...subResult.edges);
-
-          const firstNodes = subResult.nodes.filter(n => n.type === 'tableNode' && !n.id.includes('subquery_wrapper'));
-          if (firstNodes.length > 0) {
-            firstNodes.forEach(fn => {
-              edges.push({
-                id: `${prefix}edge_step_link_fn_${gIdx}_${fn.id}`,
-                source: lastStepId,
-                target: fn.id,
-                animated: true,
-                label: 'Flow'
-              });
+          const queryId = `${prefix}proc_step_group_${gIdx}`;
+          const stepPrefix = `${prefix}step_${gIdx}_`;
+          
+          const isExpanded = options.expandedQueries && options.expandedQueries.has(queryId);
+          
+          if (!isExpanded) {
+            let snippet = '';
+            if (step.parsedQuery.type === 'select') snippet = 'SELECT ...';
+            else if (step.parsedQuery.type === 'insert') snippet = 'INSERT INTO ...';
+            else if (step.parsedQuery.type === 'update') snippet = 'UPDATE ...';
+            else if (step.parsedQuery.type === 'delete') snippet = 'DELETE FROM ...';
+            else if (step.parsedQuery.type === 'statement') snippet = step.parsedQuery.text || 'STATEMENT';
+            
+            nodes.push({
+              id: queryId,
+              type: 'queryGroupNode',
+              data: {
+                title: step.title || `Step ${gIdx + 1}`,
+                queryText: snippet || step.text,
+                queryId: queryId,
+                onToggle: options.onToggleExpand
+              },
+              position: { x: 0, y: 0 }
             });
-          } else if (subResult.nodes.length > 0) {
+            
             edges.push({
-              id: `${prefix}edge_step_link_fb_${gIdx}`,
+              id: `${prefix}edge_proc_group_step_${gIdx}`,
               source: lastStepId,
-              target: subResult.nodes[0].id,
+              target: queryId,
               animated: true,
               label: 'Flow'
             });
-          }
+            lastStepId = queryId;
+          } else {
+            const subResult = astToGraph(step.parsedQuery, stepPrefix, dialect, currentCteTableNodeIds, options);
+            nodes.push(...subResult.nodes);
+            edges.push(...subResult.edges);
 
-          if (subResult.outputId) {
-            lastStepId = subResult.outputId;
-          } else if (subResult.nodes.length > 0) {
-            lastStepId = subResult.nodes[subResult.nodes.length - 1].id;
+            const collapseId = `${queryId}_collapse`;
+            nodes.push({
+              id: collapseId,
+              type: 'collapseNode',
+              data: {
+                title: `Hide ${step.title || 'Step'}`,
+                queryId: queryId,
+                onToggle: options.onToggleExpand
+              },
+              position: { x: 0, y: 0 }
+            });
+
+            edges.push({
+              id: `${prefix}edge_proc_collapse_step_${gIdx}`,
+              source: lastStepId,
+              target: collapseId,
+              animated: true,
+              label: 'Flow'
+            });
+
+            const firstNodes = subResult.nodes.filter(n => n.type === 'tableNode' && !n.id.includes('subquery_wrapper'));
+            if (firstNodes.length > 0) {
+              firstNodes.forEach((fn, fIdx) => {
+                edges.push({
+                  id: `${prefix}edge_step_link_${gIdx}_${fIdx}`,
+                  source: collapseId,
+                  target: fn.id,
+                  animated: true
+                });
+              });
+            } else if (subResult.nodes.length > 0) {
+              edges.push({
+                id: `${prefix}edge_step_link_fb_${gIdx}`,
+                source: collapseId,
+                target: subResult.nodes[0].id,
+                animated: true
+              });
+            }
+
+            if (subResult.outputId) {
+              lastStepId = subResult.outputId;
+            } else if (subResult.nodes.length > 0) {
+              lastStepId = subResult.nodes[subResult.nodes.length - 1].id;
+            } else {
+              lastStepId = collapseId;
+            }
           }
         } else {
+
           let nodeType = 'filterNode';
           let title = step.title;
           let displayContent = step.text;
@@ -1840,7 +2030,22 @@ export function astToGraph(
     });
   }
 
+  
   const queryType = ast.type || 'select';
+
+  if (queryType === 'statement' || queryType === 'conditional_step' || queryType === 'assignment_step' || queryType === 'loop_step' || queryType === 'select_step' || queryType === 'update_step' || queryType === 'insert_step' || queryType === 'delete_step') {
+    const stepId = `${prefix}${queryType}`;
+    nodes.push({
+      id: stepId,
+      type: 'filterNode',
+      data: {
+        title: queryType.replace('_', ' ').toUpperCase(),
+        condition: ast.text || ''
+      },
+      position: { x: 0, y: 0 }
+    });
+    return { nodes, edges, outputId: stepId };
+  }
 
   if (queryType !== 'select') {
     const tableNodes: any[] = [];
@@ -2070,6 +2275,11 @@ export function astToGraph(
 
   // Standard SELECT query logic
   let lastActiveId = '';
+
+  if ((!ast.from || ast.from.length === 0) && (!ast.columns || ast.columns.length === 0 || ast.columns === '*')) {
+    // Empty select block, usually unsupported syntax parsed badly
+    return { nodes, edges, outputId: '' };
+  }
 
   if (ast.from && Array.isArray(ast.from) && ast.from.length > 0) {
     for (let i = 0; i < ast.from.length; i++) {
