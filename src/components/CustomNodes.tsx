@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { 
+import {  
   Database, 
   GitMerge, 
   Filter, 
@@ -13,7 +13,7 @@ import {
   HelpCircle,
   FileCode2,
   Edit
-} from 'lucide-react';
+, Layers, ChevronDown } from 'lucide-react';
 
 interface CustomNodeProps {
   data: any;
@@ -271,7 +271,63 @@ export const ResultNode = memo(({ data, selected, targetPosition, sourcePosition
 ResultNode.displayName = 'ResultNode';
 
 // ALL CUSTOM NODES MAPPED FOR REACT FLOW
+
+export const QueryGroupNode = memo(({ data, selected, targetPosition, sourcePosition }: CustomNodeProps) => {
+  return (
+    <>
+      <Handle type="target" position={targetPosition || Position.Left} className="w-2 h-2 bg-slate-400" />
+      <div className={`bg-slate-800 border ${selected ? 'border-amber-400 shadow-amber-900/20' : 'border-indigo-500/50'} rounded-lg shadow-xl overflow-hidden min-w-[280px] transition-all`}>
+        <div className="bg-indigo-900/40 px-3 py-2 border-b border-indigo-500/30 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-indigo-400" />
+            <span className="font-mono text-xs font-semibold text-indigo-300 uppercase tracking-wider">
+              {data.title || 'QUERY BLOCK'}
+            </span>
+          </div>
+        </div>
+        <div className="p-3">
+          <p className="text-sm text-slate-300 font-mono truncate max-w-[250px] mb-3">
+            {data.queryText || 'Complex query execution'}
+          </p>
+          <button 
+            onClick={() => data.onToggle?.(data.queryId)}
+            className="w-full bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/50 rounded py-1 px-2 text-xs font-medium transition-colors flex items-center justify-center gap-1"
+          >
+            <ChevronDown className="w-3 h-3" /> Expand Details
+          </button>
+        </div>
+      </div>
+      <Handle type="source" position={sourcePosition || Position.Right} className="w-2 h-2 bg-slate-400" />
+    </>
+  );
+});
+
+
+export const CollapseNode = memo(({ data, selected, targetPosition, sourcePosition }: CustomNodeProps) => {
+  return (
+    <>
+      <Handle type="target" position={targetPosition || Position.Left} className="w-2 h-2 bg-slate-400" />
+      <div className={`bg-slate-800/80 border ${selected ? 'border-amber-400' : 'border-slate-600'} rounded-lg shadow-md overflow-hidden min-w-[200px] transition-all`}>
+        <div className="p-2 flex flex-col items-center justify-center gap-2">
+          <span className="font-mono text-xs font-semibold text-slate-300 uppercase tracking-wider">
+            {data.title || 'Expanded Query'}
+          </span>
+          <button 
+            onClick={() => data.onToggle?.(data.queryId)}
+            className="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-500 rounded py-1 px-2 text-xs font-medium transition-colors flex items-center justify-center gap-1"
+          >
+            Collapse <ChevronDown className="w-3 h-3 rotate-180" />
+          </button>
+        </div>
+      </div>
+      <Handle type="source" position={sourcePosition || Position.Right} className="w-2 h-2 bg-slate-400" />
+    </>
+  );
+});
+
 export const nodeTypes = {
+  collapseNode: CollapseNode,
+  queryGroupNode: QueryGroupNode,
   tableNode: TableNode,
   joinNode: JoinNode,
   filterNode: FilterNode,
