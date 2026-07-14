@@ -52,6 +52,45 @@ export default function App() {
   
     const [expandedQueries, setExpandedQueries] = useState<Set<string>>(new Set());
 
+  
+  
+  const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [astResult, setAstResult] = useState<any>(null);
+
+  const handleExpandAll = useCallback(() => {
+    const getAllIds = (ast: any, prefix = 'main_'): string[] => {
+      let ids: string[] = [];
+      if (!ast) return ids;
+      if (ast.type === 'multi_query') {
+        ast.queries.forEach((qAst: any, qIdx: number) => {
+          const queryId = `${prefix}query_block_${qIdx}`;
+          ids.push(queryId);
+          ids.push(...getAllIds(qAst, `${prefix}q${qIdx}_`));
+        });
+      } else if (ast.type === 'procedure') {
+        ast.steps.forEach((step: any, gIdx: number) => {
+          if (step.parsedQuery) {
+            const queryId = `${prefix}proc_step_group_${gIdx}`;
+            ids.push(queryId);
+            ids.push(...getAllIds(step.parsedQuery, `${prefix}step_${gIdx}_`));
+          }
+        });
+      }
+      return ids;
+    };
+    
+    if (astResult) {
+      const allIds = getAllIds(astResult);
+      setExpandedQueries(new Set(allIds));
+    }
+  }, [astResult]);
+
+  const handleCollapseAll = useCallback(() => {
+    setExpandedQueries(new Set());
+  }, []);
+
   const handleToggleExpand = useCallback((queryId: string) => {
     setExpandedQueries(prev => {
       const next = new Set(prev);
@@ -64,10 +103,6 @@ export default function App() {
     });
   }, []);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [astResult, setAstResult] = useState<any>(null);
   
   const [selectedNode, setSelectedNode] = useState<any | null>(null);
   const [showAstPreview, setShowAstPreview] = useState<boolean>(false);
@@ -343,6 +378,20 @@ export default function App() {
               <div className={`flex p-0.5 rounded-md border ${
                 theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-900 border-slate-700'
               }`}>
+                                <button
+                  onClick={handleExpandAll}
+                  className="px-2.5 py-1 rounded text-[10px] font-mono transition-all text-slate-400 hover:text-slate-300"
+                  title="Expand all nested queries"
+                >
+                  Expand All
+                </button>
+                <button
+                  onClick={handleCollapseAll}
+                  className="px-2.5 py-1 rounded text-[10px] font-mono transition-all text-slate-400 hover:text-slate-300"
+                  title="Collapse all nested queries"
+                >
+                  Collapse All
+                </button>
                 <button
                   onClick={handleSortToggle}
                   className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
