@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   ReactFlow, 
   Background, 
@@ -50,6 +50,20 @@ export default function App() {
   const [showSortNodes, setShowSortNodes] = useState<boolean>(true);
   const [showLimitNodes, setShowLimitNodes] = useState<boolean>(true);
   
+    const [expandedQueries, setExpandedQueries] = useState<Set<string>>(new Set());
+
+  const handleToggleExpand = useCallback((queryId: string) => {
+    setExpandedQueries(prev => {
+      const next = new Set(prev);
+      if (next.has(queryId)) {
+        next.delete(queryId);
+      } else {
+        next.add(queryId);
+      }
+      return next;
+    });
+  }, []);
+
   const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
   const [error, setError] = useState<string | null>(null);
@@ -78,9 +92,7 @@ export default function App() {
   const handleVisualize = (
     queryText = sql,
     currentDialect = dialect,
-    currentDir = direction,
-    sSort = showSortNodes,
-    sLimit = showLimitNodes
+    currentDir = direction
   ) => {
     if (!queryText.trim()) {
       setError(null);
@@ -100,26 +112,41 @@ export default function App() {
 
     setError(null);
     setAstResult(result.ast);
-
-    try {
-      const graphData = astToGraph(result.ast, 'main_', currentDialect, {}, { showSort: sSort, showLimit: sLimit });
-      const layouted = getLayoutedElements(graphData.nodes, graphData.edges, currentDir);
-      setNodes(layouted.nodes);
-      setEdges(layouted.edges);
-      
-      // Select the result node as default if available
-      const resultNode = layouted.nodes.find(n => n.id.endsWith('result'));
-      if (resultNode) {
-        setSelectedNode(resultNode);
-      } else if (layouted.nodes.length > 0) {
-        setSelectedNode(layouted.nodes[0]);
-      } else {
-        setSelectedNode(null);
-      }
-    } catch (err: any) {
-      setError(`Layout / AST Mapping error: ${err.message || String(err)}`);
-    }
   };
+
+    useEffect(() => {
+    if (astResult) {
+      try {
+        const graphData = astToGraph(
+          astResult,
+          'main_',
+          dialect,
+          {},
+          {
+            showSort: showSortNodes,
+            showLimit: showLimitNodes,
+            expandedQueries,
+            onToggleExpand: handleToggleExpand
+          }
+        );
+        const layouted = getLayoutedElements(graphData.nodes, graphData.edges, direction);
+        setNodes(layouted.nodes);
+        setEdges(layouted.edges);
+        
+        // Select the result node as default if available and no selected node
+        if (!selectedNode) {
+          const resultNode = layouted.nodes.find(n => n.id.endsWith('result'));
+          if (resultNode) {
+            setSelectedNode(resultNode);
+          } else if (layouted.nodes.length > 0) {
+            setSelectedNode(layouted.nodes[0]);
+          }
+        }
+      } catch (err: any) {
+        setError(`Layout / AST Mapping error: ${err.message || String(err)}`);
+      }
+    }
+  }, [astResult, dialect, direction, showSortNodes, showLimitNodes, expandedQueries, handleToggleExpand, setNodes, setEdges]);
 
   const handlePresetChange = (presetId: string) => {
     const preset = sqlPresets.find(p => p.id === presetId);
@@ -379,11 +406,7 @@ export default function App() {
                 {theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-blue-600" />}
               </button>
                             
-              <span className={`text-[10px] px-2 py-1 rounded border ${
-                theme === 'dark' ? 'text-slate-500 bg-slate-950 border-slate-800' : 'text-slate-400 bg-slate-900 border-slate-700'
-              }`}>
-                Nodes: {nodes.length} | Edges: {edges.length}
-              </span>
+
             </div>
           </div>
 
