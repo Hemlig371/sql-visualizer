@@ -216,21 +216,21 @@ function splitByTopLevelCommas(text: string): string[] {
     const prevChar = i > 0 ? text[i - 1] : '';
 
     if (inSingleQuote) {
-      if (char === "'" && prevChar !== '\\') {
+      if (char === "'") {
         inSingleQuote = false;
       }
       current += char;
       continue;
     }
     if (inDoubleQuote) {
-      if (char === '"' && prevChar !== '\\') {
+      if (char === '"') {
         inDoubleQuote = false;
       }
       current += char;
       continue;
     }
     if (inBacktick) {
-      if (char === '`' && prevChar !== '\\') {
+      if (char === '`') {
         inBacktick = false;
       }
       current += char;
@@ -294,15 +294,15 @@ function parseHeuristicColumn(colStr: string): any {
     const prevChar = i > 0 ? colStr[i - 1] : '';
     
     if (inSingleQuote) {
-      if (char === "'" && prevChar !== '\\') inSingleQuote = false;
+      if (char === "'") inSingleQuote = false;
       continue;
     }
     if (inDoubleQuote) {
-      if (char === '"' && prevChar !== '\\') inDoubleQuote = false;
+      if (char === '"') inDoubleQuote = false;
       continue;
     }
     if (inBacktick) {
-      if (char === '`' && prevChar !== '\\') inBacktick = false;
+      if (char === '`') inBacktick = false;
       continue;
     }
     
@@ -721,15 +721,15 @@ function findTopLevelKeywordIndex(sql: string, keywordRegex: RegExp): number {
     }
 
     if (inSingleQuote) {
-      if (char === "'" && sql[i - 1] !== '\\') inSingleQuote = false;
+      if (char === "'") inSingleQuote = false;
       continue;
     }
     if (inDoubleQuote) {
-      if (char === '"' && sql[i - 1] !== '\\') inDoubleQuote = false;
+      if (char === '"') inDoubleQuote = false;
       continue;
     }
     if (inBacktick) {
-      if (char === '`' && sql[i - 1] !== '\\') inBacktick = false;
+      if (char === '`') inBacktick = false;
       continue;
     }
 
@@ -902,17 +902,17 @@ function splitProcedureStatements(bodyStr: string): string[] {
     }
     
     if (inSingleQuote) {
-      if (char === "'" && bodyStr[i - 1] !== '\\') inSingleQuote = false;
+      if (char === "'") inSingleQuote = false;
       current += char;
       continue;
     }
     if (inDoubleQuote) {
-      if (char === '"' && bodyStr[i - 1] !== '\\') inDoubleQuote = false;
+      if (char === '"') inDoubleQuote = false;
       current += char;
       continue;
     }
     if (inBacktick) {
-      if (char === '`' && bodyStr[i - 1] !== '\\') inBacktick = false;
+      if (char === '`') inBacktick = false;
       current += char;
       continue;
     }
@@ -1030,7 +1030,8 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
   const beginIdx = sql.search(/\bBEGIN\b/i);
   let bodyStr = sql;
   if (beginIdx !== -1) {
-    const endIdx = sql.lastIndexOf('END');
+    const endMatch = [...sql.matchAll(/\\bEND\\b/gi)];
+    const endIdx = endMatch.length > 0 ? endMatch[endMatch.length - 1].index : -1;
     bodyStr = sql.substring(beginIdx + 5, endIdx !== -1 ? endIdx : sql.length).trim();
   } else {
     const bodyStartMatch = sql.match(/\b(?:BEGIN|AS|IS)\b/i);
@@ -1119,17 +1120,17 @@ export function splitQueries(sql: string): string[] {
     }
 
     if (inSingleQuote) {
-      if (char === "'" && sql[i - 1] !== '\\') {
+      if (char === "'") {
         inSingleQuote = false;
       }
       current += char;
     } else if (inDoubleQuote) {
-      if (char === '"' && sql[i - 1] !== '\\') {
+      if (char === '"') {
         inDoubleQuote = false;
       }
       current += char;
     } else if (inBacktick) {
-      if (char === '`' && sql[i - 1] !== '\\') {
+      if (char === '`') {
         inBacktick = false;
       }
       current += char;
@@ -1186,7 +1187,7 @@ export function splitQueries(sql: string): string[] {
         current += char;
       } else if (char === ';') {
         const upperCurrent = current.toUpperCase();
-        const isProc = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)\b/.test(upperCurrent);
+        const isProc = /\b(?:CREATE\s+(?:OR\s+REPLACE\s+)?)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)\b/.test(upperCurrent);
         
         let blockDepth = 0;
         if (isProc) {
@@ -1255,17 +1256,17 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
     }
 
     if (inSingleQuote) {
-      if (char === "'" && sql[i - 1] !== '\\') inSingleQuote = false;
+      if (char === "'") inSingleQuote = false;
       current += char;
       continue;
     }
     if (inDoubleQuote) {
-      if (char === '"' && sql[i - 1] !== '\\') inDoubleQuote = false;
+      if (char === '"') inDoubleQuote = false;
       current += char;
       continue;
     }
     if (inBacktick) {
-      if (char === '`' && sql[i - 1] !== '\\') inBacktick = false;
+      if (char === '`') inBacktick = false;
       current += char;
       continue;
     }
