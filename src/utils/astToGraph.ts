@@ -482,10 +482,18 @@ function splitProcedureStatements(bodyStr: string): string[] {
       }
     } else if (t.type === 'word') {
       const upper = t.value.toUpperCase();
-      if (upper === 'BEGIN' || upper === 'CASE' || upper === 'LOOP') {
+      if (upper === 'RETURN') {
+         const stmt = bodyStr.substring(currentStart, t.end).trim();
+         if (stmt) statements.push(stmt);
+         currentStart = t.end;
+         lastWord = '';
+         continue;
+      }
+      
+      if (upper === 'BEGIN') {
          blockDepth++;
-      } else if (upper === 'IF' && lastWord !== 'END') {
-         blockDepth++;
+      } else if (upper === 'CASE' || upper === 'LOOP' || upper === 'IF') {
+         if (lastWord !== 'END') blockDepth++;
       } else if (upper === 'END') {
          blockDepth = Math.max(0, blockDepth - 1);
       }
@@ -554,10 +562,8 @@ export function splitQueries(sql: string): string[] {
           blockDepth++;
           hasSeenBegin = true;
         }
-      } else if (upper === 'CASE' || upper === 'LOOP') {
-        blockDepth++;
-      } else if (upper === 'IF' && lastWord !== 'END') {
-        blockDepth++;
+      } else if (upper === 'CASE' || upper === 'LOOP' || upper === 'IF') {
+        if (lastWord !== 'END') blockDepth++;
       } else if (upper === 'END') {
         blockDepth = Math.max(0, blockDepth - 1);
       }
@@ -828,6 +834,24 @@ function parseTableOrSubquery(str: string, dialect: string): any {
   str = str.trim();
   if (!str) return null;
 
+  // Обработка Table-Valued Functions (напр. TABLE(func(...)) t)
+  const tableFuncMatch = str.match(/^TABLE\s*\((.+)\)(?:\s+(?:AS\s+)?([A-Za-z0-9_\u0400-\u04FFёЁ]+))?$/i);
+  if (tableFuncMatch) {
+    return {
+      table: `TABLE(${tableFuncMatch[1]})`,
+      as: tableFuncMatch[2] || null,
+      isTableFunction: true
+    };
+  }
+  if (str.toUpperCase().startsWith('TABLE')) {
+    const aliasMatch = str.match(/\)\s+(?:AS\s+)?([A-Za-z0-9_\u0400-\u04FFёЁ]+)$/i);
+    return {
+      table: str.replace(/\s+(?:AS\s+)?[A-Za-z0-9_\u0400-\u04FFёЁ]+$/i, '').trim(),
+      as: aliasMatch ? aliasMatch[1] : null,
+      isTableFunction: true
+    };
+  }
+
   if (str.startsWith('(')) {
     const closingIdx = findClosingParenthesis(str, 0);
     if (closingIdx !== -1) {
@@ -1091,12 +1115,12 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
     }
   }
 
-  // Умный поиск границ секций через токены (Игнорирует строки!)
   const tokens = tokenizeSql(sql);
   let declareStart = -1;
   let beginStart = -1;
   let endStart = -1;
   let blockDepth = 0;
+  let lastWord = '';
 
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
@@ -1109,13 +1133,14 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
         if (beginStart === -1) beginStart = t.end;
         blockDepth++;
       } else if (upper === 'CASE' || upper === 'LOOP' || upper === 'IF') {
-        if (upper === 'CASE' || upper === 'LOOP') blockDepth++; 
+        if (lastWord !== 'END') blockDepth++; 
       } else if (upper === 'END') {
         blockDepth = Math.max(0, blockDepth - 1);
         if (blockDepth === 0 && beginStart !== -1) {
           endStart = t.start;
         }
       }
+      lastWord = upper;
     }
   }
 
@@ -1788,7 +1813,7 @@ export function astToGraph(
           currentTableOutputId = cteTableId;
         } else {
           const tableId = `${prefix}table_${i}`;
-          nodes.push({ id: tableId, type: 'tableNode', data: { label: tableName, alias: tableAlias, title: 'Base Table' }, position: { x: 0, y: 0 } });
+          nodes.push({ id: tableId, type: 'tableNode', data: { label: tableName, alias: tableAlias, title: fromItem.isTableFunction ? 'Table Function' : 'Base Table' }, position: { x: 0, y: 0 } });
           currentTableOutputId = tableId;
         }
       }
