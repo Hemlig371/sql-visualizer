@@ -22,7 +22,6 @@ export interface GraphEdge {
 const parser = new Parser();
 
 // --- 1. CORE LEXER (STATE MACHINE) ---
-// This safely breaks SQL down into syntactic tokens, handling dialects perfectly.
 
 export interface Token {
   type: 'word' | 'string' | 'comment' | 'symbol' | 'whitespace';
@@ -40,7 +39,6 @@ export function tokenizeSql(sql: string): Token[] {
     const char = sql[i];
     const nextChar = sql[i + 1] || '';
 
-    // Whitespace
     if (/\s/.test(char)) {
       const start = i;
       while (i < len && /\s/.test(sql[i])) i++;
@@ -48,7 +46,6 @@ export function tokenizeSql(sql: string): Token[] {
       continue;
     }
 
-    // Single line comment (-- or #)
     if ((char === '-' && nextChar === '-') || char === '#') {
       const start = i;
       while (i < len && sql[i] !== '\n' && sql[i] !== '\r') i++;
@@ -56,7 +53,6 @@ export function tokenizeSql(sql: string): Token[] {
       continue;
     }
 
-    // Multi-line comment (/* ... */) with ClickHouse nested support
     if (char === '/' && nextChar === '*') {
       const start = i;
       let depth = 1;
@@ -76,7 +72,6 @@ export function tokenizeSql(sql: string): Token[] {
       continue;
     }
 
-    // Postgres Dollar Quotes ($tag$ ... $tag$)
     if (char === '$' && (nextChar === '$' || /[a-zA-Z0-9_]/.test(nextChar))) {
       const match = sql.substring(i).match(/^(\$[a-zA-Z0-9_]*\$)/);
       if (match) {
@@ -94,7 +89,6 @@ export function tokenizeSql(sql: string): Token[] {
       }
     }
 
-    // Oracle Q-quotes (q'[...]', q'{...}', q'<...>', q'(...)', q'!...!')
     if ((char === 'q' || char === 'Q') && nextChar === "'") {
       const quoteChar = sql[i + 2];
       if (quoteChar) {
@@ -118,18 +112,17 @@ export function tokenizeSql(sql: string): Token[] {
       }
     }
 
-    // Standard Strings (', ", `)
     if (char === "'" || char === '"' || char === '`') {
       const start = i;
       const quote = char;
       i++;
       while (i < len) {
-        if (sql[i] === '\\') { // Escape char
+        if (sql[i] === '\\') { 
           i += 2;
           continue;
         }
         if (sql[i] === quote) {
-          if (sql[i + 1] === quote) { // Double quote escape (e.g. '')
+          if (sql[i + 1] === quote) { 
             i += 2;
             continue;
           }
@@ -142,7 +135,6 @@ export function tokenizeSql(sql: string): Token[] {
       continue;
     }
 
-    // Words (Identifiers, Keywords)
     if (/[a-zA-Z0-9_\u0400-\u04FFёЁ]/.test(char)) {
       const start = i;
       while (i < len && /[a-zA-Z0-9_\u0400-\u04FFёЁ.$]/.test(sql[i])) i++;
@@ -150,7 +142,6 @@ export function tokenizeSql(sql: string): Token[] {
       continue;
     }
 
-    // Symbols (Punctuation, Operators)
     const start = i;
     tokens.push({ type: 'symbol', value: char, start, end: i + 1 });
     i++;
@@ -482,14 +473,6 @@ function splitProcedureStatements(bodyStr: string): string[] {
       }
     } else if (t.type === 'word') {
       const upper = t.value.toUpperCase();
-      if (upper === 'RETURN') {
-         const stmt = bodyStr.substring(currentStart, t.end).trim();
-         if (stmt) statements.push(stmt);
-         currentStart = t.end;
-         lastWord = '';
-         continue;
-      }
-      
       if (upper === 'BEGIN') {
          blockDepth++;
       } else if (upper === 'CASE' || upper === 'LOOP' || upper === 'IF') {
@@ -834,7 +817,6 @@ function parseTableOrSubquery(str: string, dialect: string): any {
   str = str.trim();
   if (!str) return null;
 
-  // ИСПРАВЛЕНИЕ: Вытаскиваем реальный код из TABLE() через токены
   if (/^TABLE\s*\(/i.test(str)) {
     const openIdx = str.indexOf('(');
     const closeIdx = findClosingParenthesis(str, openIdx);
@@ -852,7 +834,7 @@ function parseTableOrSubquery(str: string, dialect: string): any {
       }
       
       return {
-        table: innerCode, // Реальный код, который был внутри скобок
+        table: innerCode, 
         as: alias,
         isTableFunction: true
       };
@@ -1229,6 +1211,13 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
       } else if (firstWord === 'EXECUTE') {
         stepType = 'statement';
         title = 'Execute Immediate';
+      } else if (firstWord === 'FUNCTION' || firstWord === 'PROCEDURE') {
+        stepType = 'procedure_step';
+        title = `${firstWord} Block`;
+        parsedQuery = parseSingleSqlToAst(text, dialect).ast;
+      } else if (firstWord === 'RETURN' || firstWord === 'END' || firstWord === 'PIPE' || firstWord === 'EXIT' || firstWord === 'CONTINUE') {
+        stepType = 'control_step';
+        title = `Control Flow: ${firstWord}`;
       } else {
         const hasAssignment = stepTokens.some(t => t.type === 'symbol' && (t.value === '=' || t.value === ':'));
         if (hasAssignment) {
@@ -1253,7 +1242,7 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
 export function parseSingleSqlToAst(sql: string, dialect: string): any {
   const cleanSql = sql.trim(); 
   const upperSql = cleanSql.toUpperCase();
-  const isProcedure = /CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)|DECLARE\b|BEGIN\b/i.test(upperSql);
+  const isProcedure = /^\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)|PROCEDURE\b|FUNCTION\b|DECLARE\b|BEGIN\b)/i.test(upperSql);
   if (isProcedure) {
     return { ast: parseHeuristicProcedure(cleanSql, dialect), error: null };
   }
@@ -1493,6 +1482,7 @@ export function astToGraph(
     let currentSimpleGroup: any[] = [];
 
     const isSimpleStep = (step: any) => {
+      // Исключаем procedure_step и control_step из группировки
       return !step.parsedQuery && (step.type === 'assignment_step' || step.type === 'statement' || step.type === 'exception_block');
     };
 
@@ -1553,6 +1543,7 @@ export function astToGraph(
             else if (step.parsedQuery.type === 'delete') snippet = 'DELETE FROM ...';
             else if (step.parsedQuery.type === 'merge') snippet = 'MERGE INTO ...';
             else if (step.parsedQuery.type === 'statement') snippet = step.parsedQuery.text || 'STATEMENT';
+            else if (step.parsedQuery.type === 'procedure') snippet = step.text || 'PROCEDURE BODY';
             
             nodes.push({ id: queryId, type: 'queryGroupNode', data: { title: step.title || `Step ${gIdx + 1}`, queryText: snippet || step.text, queryId: queryId, onToggle: options.onToggleExpand }, position: { x: 0, y: 0 } });
             edges.push({ id: `${prefix}edge_proc_group_step_${gIdx}`, source: lastStepId, target: queryId, animated: true, label: 'Flow' });
@@ -1584,6 +1575,7 @@ export function astToGraph(
 
           if (step.type === 'conditional_step') { nodeType = 'filterNode'; title = `❓ ${step.title}`; } 
           else if (step.type === 'loop_step') { nodeType = 'groupByNode'; title = `🔄 ${step.title}`; }
+          else if (step.type === 'control_step') { nodeType = 'filterNode'; title = `↪️ ${step.title}`; }
 
           nodes.push({ id: stepNodeId, type: nodeType, data: { title: title, condition: displayContent, columns: displayContent }, position: { x: 0, y: 0 } });
           edges.push({ id: `${prefix}edge_proc_step_${gIdx}`, source: lastStepId, target: stepNodeId, animated: true, label: 'Flow' });
@@ -1814,7 +1806,7 @@ export function astToGraph(
         let tableName = fromItem.table;
         let isFunc = fromItem.isTableFunction;
 
-        // 1. Вытаскиваем код, если node-sql-parser спрятал функцию в expr
+        // Если функция была спрятана парсером в поле expr
         if (!tableName && fromItem.expr) {
           tableName = formatExpr(fromItem.expr);
           isFunc = true;
@@ -1822,7 +1814,7 @@ export function astToGraph(
 
         tableName = tableName || 'UNKNOWN_TABLE';
 
-        // 2. Срезаем обертку TABLE(...), чтобы оставить только реальный код внутри скобок
+        // Срезаем внешнюю обертку TABLE() чтобы на графе был красивый чистый код функции
         const upperName = tableName.toUpperCase();
         if (upperName.startsWith('TABLE(') || upperName.startsWith('TABLE (')) {
           const firstParen = tableName.indexOf('(');
