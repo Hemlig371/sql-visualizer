@@ -457,7 +457,6 @@ function splitProcedureStatements(bodyStr: string): string[] {
   const statements: string[] = [];
   let currentStart = 0;
   let parenDepth = 0;
-  let blockDepth = 0;
   let lastWord = '';
 
   for (let i = 0; i < tokens.length; i++) {
@@ -465,20 +464,22 @@ function splitProcedureStatements(bodyStr: string): string[] {
     if (t.type === 'symbol') {
       if (t.value === '(') parenDepth++;
       else if (t.value === ')') parenDepth = Math.max(0, parenDepth - 1);
-      else if (t.value === ';' && parenDepth === 0 && blockDepth === 0) {
+      else if (t.value === ';' && parenDepth === 0) {
+        // Стандартное разделение по точке с запятой
         const stmt = bodyStr.substring(currentStart, t.start).trim();
         if (stmt) statements.push(stmt);
         currentStart = t.end;
-        lastWord = '';
+        lastWord = ''; // сброс после ;
       }
     } else if (t.type === 'word') {
       const upper = t.value.toUpperCase();
-      if (upper === 'BEGIN') {
-         blockDepth++;
-      } else if (upper === 'CASE' || upper === 'LOOP' || upper === 'IF') {
-         if (lastWord !== 'END') blockDepth++;
-      } else if (upper === 'END') {
-         blockDepth = Math.max(0, blockDepth - 1);
+      
+      if (parenDepth === 0) {
+        if (upper === 'THEN' || upper === 'ELSE' || upper === 'BEGIN' || (upper === 'LOOP' && lastWord !== 'END')) {
+          const stmt = bodyStr.substring(currentStart, t.end).trim();
+          if (stmt) statements.push(stmt);
+          currentStart = t.end;
+        }
       }
       lastWord = upper;
     }
