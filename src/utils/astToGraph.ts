@@ -834,22 +834,29 @@ function parseTableOrSubquery(str: string, dialect: string): any {
   str = str.trim();
   if (!str) return null;
 
-  // Обработка Table-Valued Functions (напр. TABLE(func(...)) t)
-  const tableFuncMatch = str.match(/^TABLE\s*\((.+)\)(?:\s+(?:AS\s+)?([A-Za-z0-9_\u0400-\u04FFёЁ]+))?$/i);
-  if (tableFuncMatch) {
-    return {
-      table: `TABLE(${tableFuncMatch[1]})`,
-      as: tableFuncMatch[2] || null,
-      isTableFunction: true
-    };
-  }
-  if (str.toUpperCase().startsWith('TABLE')) {
-    const aliasMatch = str.match(/\)\s+(?:AS\s+)?([A-Za-z0-9_\u0400-\u04FFёЁ]+)$/i);
-    return {
-      table: str.replace(/\s+(?:AS\s+)?[A-Za-z0-9_\u0400-\u04FFёЁ]+$/i, '').trim(),
-      as: aliasMatch ? aliasMatch[1] : null,
-      isTableFunction: true
-    };
+  // ИСПРАВЛЕНИЕ: Вытаскиваем реальный код из TABLE() через токены
+  if (/^TABLE\s*\(/i.test(str)) {
+    const openIdx = str.indexOf('(');
+    const closeIdx = findClosingParenthesis(str, openIdx);
+    
+    if (closeIdx !== -1) {
+      const innerCode = str.substring(openIdx + 1, closeIdx).trim();
+      const remainder = str.substring(closeIdx + 1).trim();
+      
+      let alias: string | null = null;
+      if (remainder) {
+        const aliasMatch = remainder.match(/^(?:AS\s+)?([A-Za-z0-9_\u0400-\u04FFёЁ]+)/i);
+        if (aliasMatch) {
+          alias = aliasMatch[1];
+        }
+      }
+      
+      return {
+        table: innerCode, // Реальный код, который был внутри скобок
+        as: alias,
+        isTableFunction: true
+      };
+    }
   }
 
   if (str.startsWith('(')) {
