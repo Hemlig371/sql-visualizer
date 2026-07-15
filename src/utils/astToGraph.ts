@@ -1811,7 +1811,27 @@ export function astToGraph(
         if (subResult.outputId) edges.push({ id: `${prefix}edge_subquery_wrap_${i}`, source: subResult.outputId, target: wrapperNodeId, animated: true, style: { strokeDasharray: '4 4' } });
         currentTableOutputId = wrapperNodeId;
       } else {
-        const tableName = fromItem.table || 'UNKNOWN_TABLE';
+        let tableName = fromItem.table;
+        let isFunc = fromItem.isTableFunction;
+
+        // 1. Вытаскиваем код, если node-sql-parser спрятал функцию в expr
+        if (!tableName && fromItem.expr) {
+          tableName = formatExpr(fromItem.expr);
+          isFunc = true;
+        }
+
+        tableName = tableName || 'UNKNOWN_TABLE';
+
+        // 2. Срезаем обертку TABLE(...), чтобы оставить только реальный код внутри скобок
+        const upperName = tableName.toUpperCase();
+        if (upperName.startsWith('TABLE(') || upperName.startsWith('TABLE (')) {
+          const firstParen = tableName.indexOf('(');
+          if (firstParen !== -1 && tableName.endsWith(')')) {
+            tableName = tableName.substring(firstParen + 1, tableName.length - 1).trim();
+            isFunc = true;
+          }
+        }
+
         const tableAlias = fromItem.as || '';
         const lowerName = tableName.toLowerCase();
         const cteTableId = currentCteTableNodeIds[lowerName];
@@ -1820,7 +1840,16 @@ export function astToGraph(
           currentTableOutputId = cteTableId;
         } else {
           const tableId = `${prefix}table_${i}`;
-          nodes.push({ id: tableId, type: 'tableNode', data: { label: tableName, alias: tableAlias, title: fromItem.isTableFunction ? 'Table Function' : 'Base Table' }, position: { x: 0, y: 0 } });
+          nodes.push({ 
+            id: tableId, 
+            type: 'tableNode', 
+            data: { 
+              label: tableName, 
+              alias: tableAlias, 
+              title: isFunc ? 'Table Function' : 'Base Table' 
+            }, 
+            position: { x: 0, y: 0 } 
+          });
           currentTableOutputId = tableId;
         }
       }
