@@ -331,7 +331,6 @@ function extractSubqueriesFromString(text: string): { subquerySql: string; start
       
       if (j < tokens.length && tokens[j].type === 'word') {
         const nextWord = tokens[j].value.toUpperCase();
-        // Теперь ловим и SELECT, и WITH (CTE)
         if (nextWord === 'SELECT' || nextWord === 'WITH') {
           let depth = 1;
           let k = i + 1;
@@ -525,9 +524,7 @@ export function splitQueries(sql: string): string[] {
       if (t.value === '(') parenDepth++;
       else if (t.value === ')') parenDepth = Math.max(0, parenDepth - 1);
       
-      // Обработка ; и Oracle-специфичного /
       else if (t.value === ';' || (t.value === '/' && parenDepth === 0 && blockDepth === 0)) {
-        // Защита от деления (только если / идет как терминатор)
         const isDivision = t.value === '/' && lastWord !== 'END' && !isProc && currentStart !== t.start;
         
         if (parenDepth === 0 && !isDivision) {
@@ -551,7 +548,6 @@ export function splitQueries(sql: string): string[] {
       
       if (upper === 'BEGIN') {
         const nextToken = getNextSignificantToken(i);
-        // Игнорируем транзакционные BEGIN; BEGIN TRANSACTION; BEGIN WORK;
         const isTransaction = nextToken && (nextToken.value === ';' || nextToken.value.toUpperCase() === 'TRANSACTION' || nextToken.value.toUpperCase() === 'WORK');
         
         if (!isTransaction) {
@@ -649,7 +645,7 @@ export function extractTablesFromAst(ast: any): string[] {
 }
 
 export function parseHeuristicDml(sql: string, dialect: string): any {
-  const cleanSql = sql.trim(); // Уже очищен от комментариев в parseSqlToAst
+  const cleanSql = sql.trim();
   const upperSql = cleanSql.toUpperCase();
   
   if (upperSql.startsWith('INSERT')) {
@@ -1078,6 +1074,8 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
   };
 
   const nameMatch = sql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)\s+(?:BODY\s+)?([A-Za-z0-9_.\u0400-\u04FFёЁ]+)/i);
+  let headerEndIdx = 0;
+  
   if (nameMatch) {
     ast.name = nameMatch[1];
     const firstParen = sql.indexOf('(');
@@ -1086,79 +1084,130 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
       if (closingParen !== -1) {
         const paramsStr = sql.substring(firstParen + 1, closingParen).trim();
         ast.parameters = paramsStr.split(',').map(p => p.trim()).filter(Boolean);
+        headerEndIdx = closingParen + 1;
+      }
+    } else {
+      headerEndIdx = nameMatch.index! + nameMatch[0].length;
+    }
+  }
+
+  // Умный поиск границ секций через токены (Игнорирует строки!)
+  const tokens = tokenizeSql(sql);
+  let declareStart = -1;
+  let beginStart = -1;
+  let endStart = -1;
+  let blockDepth = 0;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.type === 'word' && t.start >= headerEndIdx) {
+      const upper = t.value.toUpperCase();
+      
+      if ((upper === 'IS' || upper === 'AS' || upper === 'DECLARE') && declareStart === -1 && beginStart === -1) {
+        declareStart = t.end;
+      } else if (upper === 'BEGIN') {
+        if (beginStart === -1) beginStart = t.end;
+        blockDepth++;
+      } else if (upper === 'CASE' || upper === 'LOOP' || upper === 'IF') {
+        if (upper === 'CASE' || upper === 'LOOP') blockDepth++; 
+      } else if (upper === 'END') {
+        blockDepth = Math.max(0, blockDepth - 1);
+        if (blockDepth === 0 && beginStart !== -1) {
+          endStart = t.start;
+        }
       }
     }
   }
 
-  const declareMatch = sql.match(/\bDECLARE\b([\s\S]+?)\bBEGIN\b/i);
-  const asBeginMatch = sql.match(/\b(?:IS|AS)\b([\s\S]+?)\bBEGIN\b/i);
   let varsSection = '';
-  if (declareMatch) {
-    varsSection = declareMatch[1];
-  } else if (asBeginMatch && !sql.match(/CREATE\s+VIEW/i)) {
-    varsSection = asBeginMatch[1];
+  let bodyStr = sql;
+
+  if (beginStart !== -1) {
+    if (declareStart !== -1) {
+      varsSection = sql.substring(declareStart, beginStart - 5).trim(); 
+    }
+    bodyStr = sql.substring(beginStart, endStart !== -1 ? endStart : sql.length).trim();
+  } else if (declareStart !== -1) {
+    varsSection = sql.substring(declareStart).trim();
+    bodyStr = '';
   }
+
+  let rawSteps: string[] = [];
 
   if (varsSection) {
-    ast.variables = varsSection
-      .split(';')
-      .map(v => v.trim())
-      .filter(v => v && !v.toUpperCase().includes('BEGIN') && !v.toUpperCase().includes('PROCEDURE'));
+    const varStatements = splitQueries(varsSection);
+    varStatements.forEach(v => {
+      const vTokens = tokenizeSql(v);
+      const firstWord = vTokens.find(t => t.type === 'word')?.value.toUpperCase();
+      
+      if (firstWord === 'CURSOR') {
+        rawSteps.push(v);
+      } else if (v && !v.toUpperCase().includes('BEGIN') && !v.toUpperCase().includes('PROCEDURE')) {
+        ast.variables.push(v);
+      }
+    });
   }
 
-  const beginIdx = sql.search(/\bBEGIN\b/i);
-  let bodyStr = sql;
-  if (beginIdx !== -1) {
-    const endMatch = [...sql.matchAll(/\\bEND\\b/gi)];
-    const endIdx = endMatch.length > 0 ? endMatch[endMatch.length - 1].index : -1;
-    bodyStr = sql.substring(beginIdx + 5, endIdx !== -1 ? endIdx : sql.length).trim();
-  } else {
-    const bodyStartMatch = sql.match(/\b(?:BEGIN|AS|IS)\b/i);
-    if (bodyStartMatch) {
-      bodyStr = sql.substring(sql.indexOf(bodyStartMatch[0]) + bodyStartMatch[0].length).trim();
-    }
-  }
-
-  const rawSteps = splitProcedureStatements(bodyStr);
+  rawSteps.push(...splitProcedureStatements(bodyStr));
   
   ast.steps = rawSteps
     .map((step, idx) => {
       const text = step.trim();
       if (!text) return null;
 
-      const cleanTextForType = text.toUpperCase();
-
       let stepType = 'statement';
       let parsedQuery: any = null;
+      let title = `Step ${idx + 1}`;
 
-      if (cleanTextForType.startsWith('SELECT')) {
+      const stepTokens = tokenizeSql(text);
+      const firstWord = stepTokens.find(t => t.type === 'word')?.value.toUpperCase();
+
+      if (firstWord === 'SELECT' || firstWord === 'WITH') {
         stepType = 'select_step';
         parsedQuery = parseSingleSqlToAst(text, dialect).ast;
-      } else if (cleanTextForType.startsWith('UPDATE')) {
+      } else if (firstWord === 'UPDATE') {
         stepType = 'update_step';
         parsedQuery = parseSingleSqlToAst(text, dialect).ast;
-      } else if (cleanTextForType.startsWith('INSERT')) {
+      } else if (firstWord === 'INSERT') {
         stepType = 'insert_step';
         parsedQuery = parseSingleSqlToAst(text, dialect).ast;
-      } else if (cleanTextForType.startsWith('DELETE')) {
+      } else if (firstWord === 'DELETE') {
         stepType = 'delete_step';
         parsedQuery = parseSingleSqlToAst(text, dialect).ast;
-      } else if (cleanTextForType.startsWith('MERGE')) {
+      } else if (firstWord === 'MERGE') {
         stepType = 'merge_step';
         parsedQuery = parseSingleSqlToAst(text, dialect).ast;
-      } else if (cleanTextForType.startsWith('IF')) {
+      } else if (firstWord === 'CURSOR') {
+        stepType = 'select_step';
+        title = 'CURSOR Declaration';
+        const isOrForToken = stepTokens.find(t => t.type === 'word' && (t.value.toUpperCase() === 'IS' || t.value.toUpperCase() === 'FOR'));
+        if (isOrForToken) {
+           const queryPart = text.substring(isOrForToken.end).trim();
+           parsedQuery = parseSingleSqlToAst(queryPart, dialect).ast;
+        }
+      } else if (firstWord === 'IF' || firstWord === 'ELSIF') {
         stepType = 'conditional_step';
-      } else if (cleanTextForType.startsWith('FOR') || cleanTextForType.startsWith('WHILE') || cleanTextForType.startsWith('LOOP')) {
+        title = 'IF Condition';
+      } else if (firstWord === 'FOR' || firstWord === 'WHILE' || firstWord === 'LOOP') {
         stepType = 'loop_step';
-      } else if (cleanTextForType.startsWith('EXCEPTION')) {
+        title = 'Loop / Iteration';
+      } else if (firstWord === 'EXCEPTION') {
         stepType = 'exception_block';
-      } else if (cleanTextForType.includes('=')) {
-        stepType = 'assignment_step';
+        title = 'Exception Handling';
+      } else if (firstWord === 'EXECUTE') {
+        stepType = 'statement';
+        title = 'Execute Immediate';
+      } else {
+        const hasAssignment = stepTokens.some(t => t.type === 'symbol' && (t.value === '=' || t.value === ':'));
+        if (hasAssignment) {
+           stepType = 'assignment_step';
+           title = 'Variable Assignment';
+        }
       }
 
       return {
         id: `step_${idx}`,
-        title: `Step ${idx + 1}: ${stepType.replace('_', ' ').toUpperCase()}`,
+        title: title,
         type: stepType,
         text: text,
         parsedQuery: parsedQuery
@@ -1170,7 +1219,7 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
 }
 
 export function parseSingleSqlToAst(sql: string, dialect: string): any {
-  const cleanSql = sql.trim(); // Уже очищен в parseSqlToAst
+  const cleanSql = sql.trim(); 
   const upperSql = cleanSql.toUpperCase();
   const isProcedure = /CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)|DECLARE\b|BEGIN\b/i.test(upperSql);
   if (isProcedure) {
@@ -1234,9 +1283,7 @@ export function parseSingleSqlToAst(sql: string, dialect: string): any {
       ast = transformNodeSqlParserUnion(ast);
       return { ast, error: null };
     }
-  } catch (err: any) {
-    // node-sql-parser failed, fall back gracefully
-  }
+  } catch (err: any) {}
 
   if (isDml) {
     try {
@@ -1254,10 +1301,8 @@ export function parseSingleSqlToAst(sql: string, dialect: string): any {
 }
 
 export function parseSqlToAst(sql: string, dialect: string): any {
-  // На входе полностью очищаем скрипт от любых комментариев
   const cleanSql = stripCommentsSafely(sql).trim();
 
-  // Разбиваем уже очищенный SQL (никаких проблем со строками)
   const queries = splitQueries(cleanSql);
 
   if (queries.length > 1) {
@@ -1440,6 +1485,25 @@ export function astToGraph(
         nodes.push({ id: groupNodeId, type: 'constantNode', data: { title: '⚙️ LOCAL OPERATIONS / STATE', details: details }, position: { x: 0, y: 0 } });
         edges.push({ id: `${prefix}edge_proc_group_${gIdx}`, source: lastStepId, target: groupNodeId, animated: true, label: 'Ops' });
         lastStepId = groupNodeId;
+
+        const nestedQueries = extractSubqueriesFromString(details);
+        nestedQueries.forEach((item, subIdx) => {
+          try {
+            const nestedPrefix = `${prefix}proc_grp_${gIdx}_sub_${subIdx}_`;
+            const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
+            const subResult = astToGraph(parsedSub, nestedPrefix, dialect, currentCteTableNodeIds, options);
+            nodes.push(...subResult.nodes);
+            edges.push(...subResult.edges);
+
+            if (subResult.outputId) {
+              edges.push({
+                id: `${prefix}edge_proc_grp_${gIdx}_sub_${subIdx}`, source: subResult.outputId, target: groupNodeId, 
+                animated: true, style: { strokeDasharray: '4 4' }, label: 'eval query'
+              });
+            }
+          } catch (e) {}
+        });
+
       } else {
         const step = group;
         const stepNodeId = `${prefix}proc_step_${gIdx}`;
@@ -1492,6 +1556,24 @@ export function astToGraph(
           nodes.push({ id: stepNodeId, type: nodeType, data: { title: title, condition: displayContent, columns: displayContent }, position: { x: 0, y: 0 } });
           edges.push({ id: `${prefix}edge_proc_step_${gIdx}`, source: lastStepId, target: stepNodeId, animated: true, label: 'Flow' });
           lastStepId = stepNodeId;
+
+          const nestedQueries = extractSubqueriesFromString(displayContent);
+          nestedQueries.forEach((item, subIdx) => {
+            try {
+              const nestedPrefix = `${prefix}proc_step_${gIdx}_sub_${subIdx}_`;
+              const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
+              const subResult = astToGraph(parsedSub, nestedPrefix, dialect, currentCteTableNodeIds, options);
+              nodes.push(...subResult.nodes);
+              edges.push(...subResult.edges);
+
+              if (subResult.outputId) {
+                edges.push({
+                  id: `${prefix}edge_proc_step_${gIdx}_sub_${subIdx}`, source: subResult.outputId, target: stepNodeId, 
+                  animated: true, style: { strokeDasharray: '4 4' }, label: 'eval query'
+                });
+              }
+            } catch (e) {}
+          });
         }
       }
     });
@@ -1675,9 +1757,7 @@ export function astToGraph(
               }
               delete fromItem.table;
             }
-          } catch (e) {
-             // Игнорируем и оставляем как есть
-          }
+          } catch (e) {}
         }
       }
 
