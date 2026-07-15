@@ -54,8 +54,17 @@ export function formatExpr(expr: any): string {
         return oExpr + oType;
       }).join(', ') : formatExpr(expr.over.orderby));
     }
-    const innerOver = [partitionStr, orderStr].filter(Boolean).join(' ');
+    let frameStr = '';
+    if (expr.over.window_frame) {
+      frameStr = 'ROWS/RANGE BETWEEN ...';
+    }
+    const innerOver = [partitionStr, orderStr, frameStr].filter(Boolean).join(' ');
     overStr = ` OVER (${innerOver})`;
+  }
+
+  let filterStr = '';
+  if (expr && expr.filter) {
+     filterStr = ` FILTER (WHERE ${formatExpr(expr.filter)})`;
   }
 
   // Handle select / union statements directly to prevent JSON stringification
@@ -96,11 +105,11 @@ export function formatExpr(expr: any): string {
     case 'aggr_func':
       const aggrName = typeof expr.name === 'object' ? formatExpr(expr.name) : expr.name;
       const aggrArgs = expr.args?.expr ? formatExpr(expr.args.expr) : (expr.args ? formatExpr(expr.args) : '*');
-      return `${aggrName}(${prefix}${aggrArgs})${overStr}`;
+      return `${aggrName}(${prefix}${aggrArgs})${filterStr}${overStr}`;
     case 'function':
       const funcName = typeof expr.name === 'object' ? formatExpr(expr.name) : expr.name;
       const funcArgs = Array.isArray(expr.args) ? expr.args.map(formatExpr).join(', ') : (expr.args ? formatExpr(expr.args) : '');
-      return `${funcName}(${funcArgs})${overStr}`;
+      return `${funcName}(${funcArgs})${filterStr}${overStr}`;
     case 'expr_list':
       if (Array.isArray(expr.value)) {
         return expr.value.map(formatExpr).join(', ');
@@ -211,58 +220,54 @@ function splitByTopLevelCommas(text: string): string[] {
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let inBacktick = false;
+  let dollarQuoteTag: string | null = null;
 
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
-    const prevChar = i > 0 ? text[i - 1] : '';
+    const nextChar = text[i + 1] || '';
 
     if (inSingleQuote) {
-      if (char === "'") {
-        inSingleQuote = false;
-      }
+      if (char === "'") inSingleQuote = false;
       current += char;
       continue;
     }
     if (inDoubleQuote) {
-      if (char === '"') {
-        inDoubleQuote = false;
-      }
+      if (char === '"') inDoubleQuote = false;
       current += char;
       continue;
     }
     if (inBacktick) {
-      if (char === '`') {
-        inBacktick = false;
+      if (char === '`') inBacktick = false;
+      current += char;
+      continue;
+    }
+    if (dollarQuoteTag !== null) {
+      current += char;
+      if (char === '$' && text.substring(i - dollarQuoteTag.length + 1, i + 1) === dollarQuoteTag) {
+        dollarQuoteTag = null;
       }
-      current += char;
       continue;
     }
 
-    if (char === "'") {
-      inSingleQuote = true;
-      current += char;
-      continue;
-    }
-    if (char === '"') {
-      inDoubleQuote = true;
-      current += char;
-      continue;
-    }
-    if (char === '`') {
-      inBacktick = true;
-      current += char;
-      continue;
+    if (char === '$' && nextChar) {
+      const remaining = text.substring(i);
+      const match = remaining.match(/^(\$[a-zA-Z0-9_]*\$)/);
+      if (match) {
+        dollarQuoteTag = match[1];
+        current += dollarQuoteTag;
+        i += dollarQuoteTag.length - 1;
+        continue;
+      }
     }
 
-    if (char === '(') {
-      parenDepth++;
-    } else if (char === ')') {
-      parenDepth = Math.max(0, parenDepth - 1);
-    } else if (char === '[') {
-      bracketDepth++;
-    } else if (char === ']') {
-      bracketDepth = Math.max(0, bracketDepth - 1);
-    }
+    if (char === "'") { inSingleQuote = true; current += char; continue; }
+    if (char === '"') { inDoubleQuote = true; current += char; continue; }
+    if (char === '`') { inBacktick = true; current += char; continue; }
+
+    if (char === '(') parenDepth++;
+    else if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
+    else if (char === '[') bracketDepth++;
+    else if (char === ']') bracketDepth = Math.max(0, bracketDepth - 1);
 
     if (char === ',' && parenDepth === 0 && bracketDepth === 0) {
       parts.push(current.trim());
@@ -286,25 +291,33 @@ function parseHeuristicColumn(colStr: string): any {
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let inBacktick = false;
+  let dollarQuoteTag: string | null = null;
   
   let lastAsIndex = -1;
   let lastSpaceIndex = -1;
   
   for (let i = 0; i < colStr.length; i++) {
     const char = colStr[i];
-    const prevChar = i > 0 ? colStr[i - 1] : '';
+    const nextChar = colStr[i + 1] || '';
     
-    if (inSingleQuote) {
-      if (char === "'") inSingleQuote = false;
+    if (inSingleQuote) { if (char === "'") inSingleQuote = false; continue; }
+    if (inDoubleQuote) { if (char === '"') inDoubleQuote = false; continue; }
+    if (inBacktick) { if (char === '`') inBacktick = false; continue; }
+    if (dollarQuoteTag !== null) {
+      if (char === '$' && colStr.substring(i - dollarQuoteTag.length + 1, i + 1) === dollarQuoteTag) {
+        dollarQuoteTag = null;
+      }
       continue;
     }
-    if (inDoubleQuote) {
-      if (char === '"') inDoubleQuote = false;
-      continue;
-    }
-    if (inBacktick) {
-      if (char === '`') inBacktick = false;
-      continue;
+
+    if (char === '$' && nextChar) {
+      const remaining = colStr.substring(i);
+      const match = remaining.match(/^(\$[a-zA-Z0-9_]*\$)/);
+      if (match) {
+        dollarQuoteTag = match[1];
+        i += dollarQuoteTag.length - 1;
+        continue;
+      }
     }
     
     if (char === "'") { inSingleQuote = true; continue; }
@@ -400,7 +413,6 @@ export function parseHeuristicDml(sql: string, dialect: string): any {
   const upperSql = cleanSql.toUpperCase();
   
   if (upperSql.startsWith('INSERT')) {
-    // Находим индекс SELECT, VALUES, UNION, WITH
     const selectOrValuesMatch = cleanSql.match(/\b(SELECT|VALUES|UNION|WITH)\b/i);
     const beforeSelectOrValues = selectOrValuesMatch ? cleanSql.substring(0, selectOrValuesMatch.index) : cleanSql;
     
@@ -430,9 +442,19 @@ export function parseHeuristicDml(sql: string, dialect: string): any {
       tableName = tableMatch ? tableMatch[1] : 'TARGET_TABLE';
     }
     
+    // Check for Postgres ON CONFLICT clause
+    let onConflictStr = '';
+    const onConflictMatch = upperSql.indexOf('ON CONFLICT');
+    if (onConflictMatch !== -1) {
+      onConflictStr = cleanSql.substring(onConflictMatch).trim();
+    }
+
     let selectAst: any = null;
     if (selectOrValuesMatch && ['SELECT', 'UNION', 'WITH'].includes(selectOrValuesMatch[1].toUpperCase())) {
-      const selectSql = cleanSql.substring(selectOrValuesMatch.index).trim();
+      let selectSql = cleanSql.substring(selectOrValuesMatch.index).trim();
+      if (onConflictMatch !== -1 && onConflictMatch > selectOrValuesMatch.index) {
+          selectSql = cleanSql.substring(selectOrValuesMatch.index, onConflictMatch).trim();
+      }
       const parsedSelect = parseSingleSqlToAst(selectSql, dialect);
       if (parsedSelect && parsedSelect.ast) {
         selectAst = parsedSelect.ast;
@@ -453,7 +475,8 @@ export function parseHeuristicDml(sql: string, dialect: string): any {
       type: 'insert',
       table: { table: tableName },
       columns: columns,
-      values: selectAst ? selectAst : Array(valuesCount).fill({ value: 'val' })
+      values: selectAst ? selectAst : Array(valuesCount).fill({ value: 'val' }),
+      on_conflict: onConflictStr
     };
   }
   
@@ -514,6 +537,17 @@ export function parseHeuristicDml(sql: string, dialect: string): any {
       table: { table: tableName },
       where: whereStr ? { type: 'column_ref', column: whereStr } : null
     };
+  }
+
+  // Oracle MERGE Support
+  if (upperSql.startsWith('MERGE')) {
+      const mergeMatch = cleanSql.match(/MERGE\s+INTO\s+([A-Za-z0-9_".\u0400-\u04FFёЁ]+)/i);
+      const tableName = mergeMatch ? mergeMatch[1] : 'TARGET_TABLE';
+      return {
+          type: 'merge',
+          table: { table: tableName },
+          text: cleanSql
+      };
   }
   
   return null;
@@ -618,7 +652,8 @@ function parseHeuristicFromAndJoins(fromBlock: string, dialect: string): any[] {
   const fromList: any[] = [];
   if (!fromBlock) return fromList;
 
-  const joinRegex = /\b(LEFT\s+OUTER\s+JOIN|RIGHT\s+OUTER\s+JOIN|FULL\s+OUTER\s+JOIN|INNER\s+JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN|CROSS\s+JOIN|JOIN)\b/i;
+  // Added support for ClickHouse ARRAY JOIN, GLOBAL JOIN, PostgreSQL LATERAL JOIN
+  const joinRegex = /\b((?:GLOBAL\s+)?(?:LEFT\s+ARRAY\s+JOIN|ARRAY\s+JOIN|LEFT\s+OUTER\s+JOIN|RIGHT\s+OUTER\s+JOIN|FULL\s+OUTER\s+JOIN|INNER\s+JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN|CROSS\s+JOIN|LATERAL\s+JOIN|JOIN))\b/i;
   const parts = fromBlock.split(joinRegex);
   
   const firstPart = parts[0].trim();
@@ -663,7 +698,8 @@ function extractCtes(sql: string, dialect: string): { ctes: any[], mainSql: stri
   workingSql = workingSql.substring(withMatch[0].length).trim();
 
   while (true) {
-    const cteHeaderMatch = workingSql.match(/^([A-Za-z0-9_\u0400-\u04FFёЁ]+)\s+AS\s*\(/i);
+    // Handling CTE column declarations: CTE_NAME (col1, col2) AS (
+    const cteHeaderMatch = workingSql.match(/^([A-Za-z0-9_\u0400-\u04FFёЁ]+)(?:\s*\([^)]+\))?\s+AS\s*\(/i);
     if (!cteHeaderMatch) {
       break;
     }
@@ -699,13 +735,14 @@ function findTopLevelKeywordIndex(sql: string, keywordRegex: RegExp): number {
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let inBacktick = false;
+  let dollarQuoteTag: string | null = null;
   let inSingleLineComment = false;
   let inMultiLineComment = false;
   let parenDepth = 0;
 
   for (let i = 0; i < sql.length; i++) {
     const char = sql[i];
-    const nextChar = sql[i + 1];
+    const nextChar = sql[i + 1] || '';
 
     if (inSingleLineComment) {
       if (char === '\n' || char === '\r') {
@@ -721,16 +758,13 @@ function findTopLevelKeywordIndex(sql: string, keywordRegex: RegExp): number {
       continue;
     }
 
-    if (inSingleQuote) {
-      if (char === "'") inSingleQuote = false;
-      continue;
-    }
-    if (inDoubleQuote) {
-      if (char === '"') inDoubleQuote = false;
-      continue;
-    }
-    if (inBacktick) {
-      if (char === '`') inBacktick = false;
+    if (inSingleQuote) { if (char === "'") inSingleQuote = false; continue; }
+    if (inDoubleQuote) { if (char === '"') inDoubleQuote = false; continue; }
+    if (inBacktick) { if (char === '`') inBacktick = false; continue; }
+    if (dollarQuoteTag !== null) {
+      if (char === '$' && sql.substring(i - dollarQuoteTag.length + 1, i + 1) === dollarQuoteTag) {
+        dollarQuoteTag = null;
+      }
       continue;
     }
 
@@ -745,10 +779,20 @@ function findTopLevelKeywordIndex(sql: string, keywordRegex: RegExp): number {
       continue;
     }
 
+    if (char === '$' && nextChar) {
+      const remaining = sql.substring(i);
+      const match = remaining.match(/^(\$[a-zA-Z0-9_]*\$)/);
+      if (match) {
+        dollarQuoteTag = match[1];
+        i += dollarQuoteTag.length - 1;
+        continue;
+      }
+    }
+
     if (char === '(') parenDepth++;
     if (char === ')') parenDepth--;
 
-    if (parenDepth === 0 && !inSingleQuote && !inDoubleQuote && !inBacktick && !inSingleLineComment && !inMultiLineComment) {
+    if (parenDepth === 0 && !inSingleQuote && !inDoubleQuote && !inBacktick && dollarQuoteTag === null && !inSingleLineComment && !inMultiLineComment) {
       // check if it matches the keyword regex starting at this point
       const match = sql.substring(i).match(keywordRegex);
       if (match && match.index === 0) {
@@ -766,7 +810,10 @@ function parseHeuristicSelect(sql: string, dialect: string): any {
     ctes: [],
     columns: [],
     from: [],
+    prewhere: null, // ClickHouse
     where: null,
+    start_with: null, // Oracle Hierarchical
+    connect_by: null, // Oracle Hierarchical
     groupby: null,
     having: null,
     orderby: null,
@@ -780,10 +827,13 @@ function parseHeuristicSelect(sql: string, dialect: string): any {
 
   const selectIdx = findTopLevelKeywordIndex(lowerSql, /^\bSELECT\b/i);
   const fromIdx = findTopLevelKeywordIndex(lowerSql, /^\bFROM\b/i);
+  const prewhereIdx = findTopLevelKeywordIndex(lowerSql, /^\bPREWHERE\b/i);
   const whereIdx = findTopLevelKeywordIndex(lowerSql, /^\bWHERE\b/i);
+  const startWithIdx = findTopLevelKeywordIndex(lowerSql, /^\bSTART\s+WITH\b/i);
+  const connectByIdx = findTopLevelKeywordIndex(lowerSql, /^\bCONNECT\s+BY\b/i);
   const groupbyIdx = findTopLevelKeywordIndex(lowerSql, /^\bGROUP\s+BY\b/i);
   const havingIdx = findTopLevelKeywordIndex(lowerSql, /^\bHAVING\b/i);
-  const orderbyIdx = findTopLevelKeywordIndex(lowerSql, /^\bORDER\s+BY\b/i);
+  const orderbyIdx = findTopLevelKeywordIndex(lowerSql, /^\bORDER\s+BY\b/i); // Handles ORDER SIBLINGS BY similarly
   const limitIdx = findTopLevelKeywordIndex(lowerSql, /^\bLIMIT\b/i);
 
   if (selectIdx === -1 && fromIdx === -1 && ctes.length === 0) {
@@ -799,7 +849,10 @@ function parseHeuristicSelect(sql: string, dialect: string): any {
   const indices = [
     { type: 'select', idx: selectIdx },
     { type: 'from', idx: fromIdx },
+    { type: 'prewhere', idx: prewhereIdx },
     { type: 'where', idx: whereIdx },
+    { type: 'start_with', idx: startWithIdx },
+    { type: 'connect_by', idx: connectByIdx },
     { type: 'groupby', idx: groupbyIdx },
     { type: 'having', idx: havingIdx },
     { type: 'orderby', idx: orderbyIdx },
@@ -827,9 +880,24 @@ function parseHeuristicSelect(sql: string, dialect: string): any {
     ast.from = parseHeuristicFromAndJoins(fromBlock, dialect);
   }
 
+  if (prewhereIdx !== -1) {
+    const prewhereBlock = getBlock(prewhereIdx + 8, getNextIdx('prewhere'));
+    ast.prewhere = { type: 'column_ref', column: prewhereBlock };
+  }
+
   if (whereIdx !== -1) {
     const whereBlock = getBlock(whereIdx + 5, getNextIdx('where'));
     ast.where = { type: 'column_ref', column: whereBlock };
+  }
+
+  if (startWithIdx !== -1) {
+      const startWithBlock = getBlock(startWithIdx + 10, getNextIdx('start_with'));
+      ast.start_with = { type: 'column_ref', column: startWithBlock };
+  }
+
+  if (connectByIdx !== -1) {
+      const connectByBlock = getBlock(connectByIdx + 10, getNextIdx('connect_by'));
+      ast.connect_by = { type: 'column_ref', column: connectByBlock };
   }
 
   if (groupbyIdx !== -1) {
@@ -879,6 +947,7 @@ function splitProcedureStatements(bodyStr: string): string[] {
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let inBacktick = false;
+  let dollarQuoteTag: string | null = null;
   let inSingleLineComment = false;
   let inMultiLineComment = false;
   let parenDepth = 0;
@@ -886,7 +955,7 @@ function splitProcedureStatements(bodyStr: string): string[] {
   
   for (let i = 0; i < bodyStr.length; i++) {
     const char = bodyStr[i];
-    const nextChar = bodyStr[i + 1];
+    const nextChar = bodyStr[i + 1] || '';
 
     if (inSingleLineComment) {
       current += char;
@@ -921,6 +990,13 @@ function splitProcedureStatements(bodyStr: string): string[] {
       current += char;
       continue;
     }
+    if (dollarQuoteTag !== null) {
+      current += char;
+      if (char === '$' && bodyStr.substring(i - dollarQuoteTag.length + 1, i + 1) === dollarQuoteTag) {
+        dollarQuoteTag = null;
+      }
+      continue;
+    }
 
     // Check comments
     if (char === '-' && nextChar === '-') {
@@ -939,6 +1015,17 @@ function splitProcedureStatements(bodyStr: string): string[] {
       current += '/*';
       i++;
       continue;
+    }
+
+    if (char === '$' && nextChar) {
+      const remaining = bodyStr.substring(i);
+      const match = remaining.match(/^(\$[a-zA-Z0-9_]*\$)/);
+      if (match) {
+        dollarQuoteTag = match[1];
+        current += dollarQuoteTag;
+        i += dollarQuoteTag.length - 1;
+        continue;
+      }
     }
 
     if (char === "'") {
@@ -1070,10 +1157,15 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
       } else if (cleanTextForType.startsWith('DELETE')) {
         stepType = 'delete_step';
         parsedQuery = parseSingleSqlToAst(text, dialect).ast;
+      } else if (cleanTextForType.startsWith('MERGE')) {
+        stepType = 'merge_step';
+        parsedQuery = parseSingleSqlToAst(text, dialect).ast;
       } else if (cleanTextForType.startsWith('IF')) {
         stepType = 'conditional_step';
       } else if (cleanTextForType.startsWith('FOR') || cleanTextForType.startsWith('WHILE') || cleanTextForType.startsWith('LOOP')) {
         stepType = 'loop_step';
+      } else if (cleanTextForType.startsWith('EXCEPTION')) {
+        stepType = 'exception_block';
       } else if (cleanTextForType.includes('=')) {
         stepType = 'assignment_step';
       }
@@ -1104,7 +1196,7 @@ export function splitQueries(sql: string): string[] {
 
   for (let i = 0; i < sql.length; i++) {
     const char = sql[i];
-    const nextChar = sql[i + 1];
+    const nextChar = sql[i + 1] || '';
 
     if (inSingleLineComment) {
       current += char;
@@ -1233,13 +1325,14 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let inBacktick = false;
+  let dollarQuoteTag: string | null = null;
   let inSingleLineComment = false;
   let inMultiLineComment = false;
   let parenDepth = 0;
 
   for (let i = 0; i < sql.length; i++) {
     const char = sql[i];
-    const nextChar = sql[i + 1];
+    const nextChar = sql[i + 1] || '';
 
     if (inSingleLineComment) {
       current += char;
@@ -1274,6 +1367,13 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
       current += char;
       continue;
     }
+    if (dollarQuoteTag !== null) {
+      current += char;
+      if (char === '$' && sql.substring(i - dollarQuoteTag.length + 1, i + 1) === dollarQuoteTag) {
+        dollarQuoteTag = null;
+      }
+      continue;
+    }
 
     // Check comments
     if (char === '-' && nextChar === '-') {
@@ -1292,6 +1392,17 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
       current += '/*';
       i++;
       continue;
+    }
+
+    if (char === '$' && nextChar) {
+      const remaining = sql.substring(i);
+      const match = remaining.match(/^(\$[a-zA-Z0-9_]*\$)/);
+      if (match) {
+        dollarQuoteTag = match[1];
+        current += dollarQuoteTag;
+        i += dollarQuoteTag.length - 1;
+        continue;
+      }
     }
 
     if (char === "'") {
@@ -1322,7 +1433,7 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
     }
 
     // Look for UNION / INTERSECT / EXCEPT
-    if (parenDepth === 0) {
+    if (parenDepth === 0 && dollarQuoteTag === null) {
       const remaining = sql.substring(i);
       const unionAllMatch = remaining.match(/^(UNION\s+ALL)\b/i);
       const unionMatch = remaining.match(/^(UNION)\b/i);
@@ -1423,7 +1534,7 @@ export function parseSingleSqlToAst(sql: string, dialect: string): any {
   }
 
   const upperSql = cleanSqlNoComments.toUpperCase();
-  const isDml = /^\s*(?:INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM)\b/i.test(cleanSqlNoComments);
+  const isDml = /^\s*(?:INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|MERGE\s+INTO)\b/i.test(cleanSqlNoComments);
 
   let parserDialect = 'postgresql';
   const lowerDialect = dialect.toLowerCase();
@@ -1473,6 +1584,7 @@ export function stripCommentsSafely(sql: string): string {
   let inDoubleQuote = false;
   let inSingleLineComment = false;
   let inMultiLineComment = false;
+  let dollarQuoteTag: string | null = null;
 
   for (let i = 0; i < sql.length; i++) {
     const char = sql[i];
@@ -1507,6 +1619,14 @@ export function stripCommentsSafely(sql: string): string {
       continue;
     }
 
+    if (dollarQuoteTag !== null) {
+      result += char;
+      if (char === '$' && sql.substring(i - dollarQuoteTag.length + 1, i + 1) === dollarQuoteTag) {
+        dollarQuoteTag = null;
+      }
+      continue;
+    }
+
     if (char === '-' && nextChar === '-') {
       inSingleLineComment = true;
       i++;
@@ -1517,6 +1637,17 @@ export function stripCommentsSafely(sql: string): string {
       inMultiLineComment = true;
       i++;
       continue;
+    }
+
+    if (char === '$' && nextChar) {
+      const remaining = sql.substring(i);
+      const match = remaining.match(/^(\$[a-zA-Z0-9_]*\$)/);
+      if (match) {
+        dollarQuoteTag = match[1];
+        result += dollarQuoteTag;
+        i += dollarQuoteTag.length - 1;
+        continue;
+      }
     }
 
     if (char === "'") inSingleQuote = true;
@@ -1583,6 +1714,7 @@ export function astToGraph(
         else if (qAst.type === 'insert') snippet = 'INSERT INTO ...';
         else if (qAst.type === 'update') snippet = 'UPDATE ...';
         else if (qAst.type === 'delete') snippet = 'DELETE FROM ...';
+        else if (qAst.type === 'merge') snippet = 'MERGE INTO ...';
         else if (qAst.type === 'statement') snippet = qAst.text || 'STATEMENT';
         
         nodes.push({
@@ -1614,10 +1746,6 @@ export function astToGraph(
         nodes.push(...qResult.nodes);
         edges.push(...qResult.edges);
         
-        // Add a "Collapse" button node or something? Actually, we can just use the first node
-        // or wrap it. But let's just render the nodes and maybe add a "Collapse" node at the start?
-        // Actually, just render normally for now, user can't collapse easily unless we add a button.
-        // Wait, let's add a Collapse node at the start of the query!
         const collapseId = `${queryId}_collapse`;
         nodes.push({
           id: collapseId,
@@ -1789,7 +1917,7 @@ export function astToGraph(
     let currentSimpleGroup: any[] = [];
 
     const isSimpleStep = (step: any) => {
-      return !step.parsedQuery && (step.type === 'assignment_step' || step.type === 'statement');
+      return !step.parsedQuery && (step.type === 'assignment_step' || step.type === 'statement' || step.type === 'exception_block');
     };
 
     ast.steps.forEach((step: any) => {
@@ -1855,6 +1983,7 @@ export function astToGraph(
             else if (step.parsedQuery.type === 'insert') snippet = 'INSERT INTO ...';
             else if (step.parsedQuery.type === 'update') snippet = 'UPDATE ...';
             else if (step.parsedQuery.type === 'delete') snippet = 'DELETE FROM ...';
+            else if (step.parsedQuery.type === 'merge') snippet = 'MERGE INTO ...';
             else if (step.parsedQuery.type === 'statement') snippet = step.parsedQuery.text || 'STATEMENT';
             
             nodes.push({
@@ -2033,7 +2162,7 @@ export function astToGraph(
   
   const queryType = ast.type || 'select';
 
-  if (queryType === 'statement' || queryType === 'conditional_step' || queryType === 'assignment_step' || queryType === 'loop_step' || queryType === 'select_step' || queryType === 'update_step' || queryType === 'insert_step' || queryType === 'delete_step') {
+  if (queryType === 'statement' || queryType === 'conditional_step' || queryType === 'assignment_step' || queryType === 'loop_step' || queryType === 'select_step' || queryType === 'update_step' || queryType === 'insert_step' || queryType === 'delete_step' || queryType === 'merge_step' || queryType === 'exception_block') {
     const stepId = `${prefix}${queryType}`;
     nodes.push({
       id: stepId,
@@ -2145,6 +2274,27 @@ export function astToGraph(
         });
         lastActiveId = tableIds[0];
       }
+      
+      // PostgreSQL ON CONFLICT support
+      if (ast.on_conflict) {
+          const conflictId = `${prefix}on_conflict`;
+          nodes.push({
+              id: conflictId,
+              type: 'filterNode',
+              data: {
+                  title: 'ON CONFLICT',
+                  condition: ast.on_conflict
+              },
+              position: { x: 0, y: 0 }
+          });
+          edges.push({
+              id: `${prefix}edge_on_conflict`,
+              source: lastActiveId,
+              target: conflictId,
+              animated: true
+          });
+          lastActiveId = conflictId;
+      }
     } else if (queryType === 'update') {
       const updateId = `${prefix}update_set`;
       const setDetails = ast.set ? ast.set.map((item: any) => `${item.column} = ${formatExpr(item.value)}`).join(', ') : '';
@@ -2209,6 +2359,26 @@ export function astToGraph(
         });
         lastActiveId = filterId;
       }
+    } else if (queryType === 'merge') {
+      const mergeId = `${prefix}merge_action`;
+      nodes.push({
+          id: mergeId,
+          type: 'filterNode',
+          data: {
+              title: 'MERGE ACTION',
+              condition: ast.text || 'Merge Clauses'
+          },
+          position: { x: 0, y: 0 }
+      });
+      tableIds.forEach(tableId => {
+          edges.push({
+              id: `${prefix}edge_merge_set_${tableId}`,
+              source: tableId,
+              target: mergeId,
+              animated: true
+          });
+      });
+      lastActiveId = mergeId;
     }
 
     const resultId = `${prefix}result`;
@@ -2227,7 +2397,7 @@ export function astToGraph(
       resCols = [
         { name: `Operation: REFRESH MAT VIEW` }
       ];
-    } else if (queryType === 'update' || queryType === 'delete') {
+    } else if (queryType === 'update' || queryType === 'delete' || queryType === 'merge') {
       resCols = [
         { name: `Operation: ${queryType.toUpperCase()}` }
       ];
@@ -2244,13 +2414,11 @@ export function astToGraph(
     });
 
     if (queryType === 'insert') {
-      tableIds.forEach((tableId, tIdx) => {
-        edges.push({
-          id: `${prefix}edge_final_result_${tIdx}`,
-          source: tableId,
+      edges.push({
+          id: `${prefix}edge_final_result_ins`,
+          source: lastActiveId,
           target: resultId,
           animated: true
-        });
       });
     } else if (queryType === 'truncate' || queryType === 'refresh_view') {
       tableIds.forEach((tableId, tIdx) => {
@@ -2415,6 +2583,28 @@ export function astToGraph(
     });
     lastActiveId = constantId;
   }
+  
+  // PREWHERE (ClickHouse)
+  if (ast.prewhere) {
+      const prewhereId = `${prefix}filter_prewhere`;
+      const conditionText = formatExpr(ast.prewhere);
+      nodes.push({
+          id: prewhereId,
+          type: 'filterNode',
+          data: {
+              title: 'PREWHERE Filter',
+              condition: conditionText
+          },
+          position: { x: 0, y: 0 }
+      });
+      edges.push({
+          id: `${prefix}edge_prewhere`,
+          source: lastActiveId,
+          target: prewhereId,
+          animated: true
+      });
+      lastActiveId = prewhereId;
+  }
 
   // Filter (WHERE)
   if (ast.where) {
@@ -2463,6 +2653,31 @@ export function astToGraph(
         // Gracefully ignore
       }
     });
+  }
+
+  // START WITH / CONNECT BY (Oracle Hierarchical)
+  if (ast.start_with || ast.connect_by) {
+      const hierarchyId = `${prefix}hierarchy_connect`;
+      let details = '';
+      if (ast.start_with) details += `START WITH: ${formatExpr(ast.start_with)}\n`;
+      if (ast.connect_by) details += `CONNECT BY: ${formatExpr(ast.connect_by)}`;
+
+      nodes.push({
+          id: hierarchyId,
+          type: 'filterNode',
+          data: {
+              title: 'Hierarchical Query',
+              condition: details
+          },
+          position: { x: 0, y: 0 }
+      });
+      edges.push({
+          id: `${prefix}edge_hierarchy`,
+          source: lastActiveId,
+          target: hierarchyId,
+          animated: true
+      });
+      lastActiveId = hierarchyId;
   }
 
   // GROUP BY
