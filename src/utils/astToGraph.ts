@@ -397,6 +397,36 @@ function splitByTopLevelCommas(text: string): string[] {
   return parts.filter(Boolean);
 }
 
+// Новая утилита для разбиения длинных условий WHERE/HAVING на строки
+function splitConditions(text: string): { name: string }[] {
+  const tokens = tokenizeSql(text);
+  const parts: { name: string }[] = [];
+  let currentStart = 0;
+  let parenDepth = 0;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.type === 'symbol') {
+      if (t.value === '(') parenDepth++;
+      else if (t.value === ')') parenDepth = Math.max(0, parenDepth - 1);
+    } else if (t.type === 'word' && parenDepth === 0) {
+      const upper = t.value.toUpperCase();
+      if (upper === 'AND' || upper === 'OR') {
+        const chunk = text.substring(currentStart, t.start).trim();
+        if (chunk) {
+          parts.push({ name: chunk });
+          currentStart = t.start;
+        }
+      }
+    }
+  }
+  const finalChunk = text.substring(currentStart).trim();
+  if (finalChunk) {
+    parts.push({ name: finalChunk });
+  }
+  return parts.length > 0 ? parts : [{ name: text }];
+}
+
 function parseHeuristicColumn(colStr: string): any {
   const cleanCol = colStr.trim();
   const tokens = tokenizeSql(cleanCol);
@@ -882,7 +912,6 @@ function parseTableOrSubquery(str: string, dialect: string): any {
     }
   }
 
-  // Обновленная регулярка: поддерживает кавычки и бэктики в явных алиасах
   const asRegex = /\s+AS\s+(["'`]?[A-Za-z0-9_\u0400-\u04FFёЁ]+["'`]?)/i;
   const match = str.match(asRegex);
   if (match) {
@@ -893,7 +922,6 @@ function parseTableOrSubquery(str: string, dialect: string): any {
     };
   }
 
-  // Поддержка кавычек в неявных алиасах (через пробел)
   const spaceParts = str.split(/\s+/);
   if (spaceParts.length > 1) {
     const lastPart = spaceParts[spaceParts.length - 1];
@@ -913,11 +941,9 @@ function parseHeuristicFromAndJoins(fromBlock: string, dialect: string): any[] {
   const fromList: any[] = [];
   if (!fromBlock) return fromList;
 
-  // 1. Сначала разбиваем по запятым верхнего уровня
   const commaParts = splitByTopLevelCommas(fromBlock);
   
   commaParts.forEach((commaPart, commaIdx) => {
-    // 2. Затем разбиваем по ключевым словам JOIN
     const joinRegex = /\b((?:GLOBAL\s+)?(?:LEFT\s+ARRAY\s+JOIN|ARRAY\s+JOIN|LEFT\s+OUTER\s+JOIN|RIGHT\s+OUTER\s+JOIN|FULL\s+OUTER\s+JOIN|INNER\s+JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN|CROSS\s+JOIN|LATERAL\s+JOIN|JOIN))\b/i;
     const parts = commaPart.split(joinRegex);
     
@@ -925,7 +951,6 @@ function parseHeuristicFromAndJoins(fromBlock: string, dialect: string): any[] {
     const baseTable = parseTableOrSubquery(firstPart, dialect);
     
     if (baseTable) {
-      // Если это не первая часть после запятой, помечаем её как COMMA JOIN
       if (commaIdx > 0) {
         baseTable.join = 'COMMA JOIN';
       }
@@ -1474,19 +1499,18 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
         const op = ast.ops[qIdx - 1] || 'UNION';
         const unionStepId = `${prefix}union_step_${qIdx}`;
         
-        // Используем filterNode вместо joinNode. У него нет пустого поля "ON", 
-        // и он выглядит как аккуратный логический шаг выполнения запроса.
+        // Оставляем тип joinNode, но передаем пустую строку в condition
+        // Это скроет или сделает блок "ON" пустым, сохранив родной компонент
         ctx.nodes.push({ 
           id: unionStepId, 
-          type: 'filterNode', 
+          type: 'joinNode', 
           data: { 
-            title: op.toUpperCase(), 
-            condition: 'Combines result sets' 
+            joinType: op.toUpperCase(), 
+            condition: '' 
           }, 
           position: { x: 0, y: 0 }
         });
         
-        // Строим последовательный каскад слияний (A + B) + C
         addEdge(ctx, currentUnionOutputId, unionStepId, 'top set');
         addEdge(ctx, subOut, unionStepId, 'bottom set');
         
@@ -1522,7 +1546,9 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
        if (ast.where) {
           const filterId = `${prefix}dml_where`;
           const cond = formatExpr(ast.where);
-          ctx.nodes.push({ id: filterId, type: 'filterNode', data: { title: 'WHERE', condition: cond }, position: { x: 0, y: 0 }});
+          const condColumns = splitConditions(cond); // Передача строк
+
+          ctx.nodes.push({ id: filterId, type: 'filterNode', data: { title: 'WHERE', condition: cond, columns: condColumns }, position: { x: 0, y: 0 }});
           targetIds.forEach(tId => addEdge(ctx, tId, filterId, 'reads from'));
           processNestedQueries(cond, filterId, `${prefix}dml_`, dialect, ctx);
           currentInputId = filterId;
@@ -1531,7 +1557,6 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
             const updateActionId = `${prefix}update_action`;
             ctx.nodes.push({ id: updateActionId, type: 'filterNode', data: { title: 'SET', iconType: 'edit' }, position: { x: 0, y: 0 }});
             addEdge(ctx, currentInputId, updateActionId);
-            // Безопасный направленный граф: после SET данные уходят в результат, без цикла
             currentInputId = updateActionId;
           }
        }
@@ -1591,7 +1616,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
         const cteId = ctx.cteOutputIds[tName.toLowerCase()];
         
         if (cteId) {
-          srcId = cteId; // Идеальная связка с CTE
+          srcId = cteId;
         } else {
           srcId = `${prefix}base_table_${idx}`;
           ctx.nodes.push({ id: srcId, type: 'tableNode', data: { label: tName, alias: fromItem.as }, position: { x: 0, y: 0 }});
@@ -1604,10 +1629,8 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
       } else {
         const joinId = `${prefix}join_${idx}`;
         
-        // --- Явное определение типа JOIN ---
         let joinTypeStr = fromItem.join ? String(fromItem.join).toUpperCase() : 'COMMA JOIN';
         
-        // Корректировка для node-sql-parser, который иногда помечает запятые как INNER JOIN без условия
         if (joinTypeStr === 'INNER JOIN' && !fromItem.on) {
           joinTypeStr = 'COMMA JOIN';
         }
@@ -1640,7 +1663,10 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     filters.forEach(f => {
       const fId = `${prefix}filter_${f.t.toLowerCase()}`;
       const condText = formatExpr(f.val);
-      ctx.nodes.push({ id: fId, type: 'filterNode', data: { title: f.t, condition: condText }, position: { x: 0, y: 0 }});
+      const condColumns = splitConditions(condText); // Передаем разбитый массив в свойство columns
+      
+      // Тип остается filterNode, но передаются columns для вашего UI
+      ctx.nodes.push({ id: fId, type: 'filterNode', data: { title: f.t, condition: condText, columns: condColumns }, position: { x: 0, y: 0 }});
       addEdge(ctx, currentOutputId, fId);
       processNestedQueries(condText, fId, `${prefix}${f.t}_`, dialect, ctx);
       currentOutputId = fId;
@@ -1667,7 +1693,9 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
   if (ast.having) {
     const hId = `${prefix}having`;
     const condText = formatExpr(ast.having);
-    ctx.nodes.push({ id: hId, type: 'havingNode', data: { condition: condText }, position: { x: 0, y: 0 }});
+    const condColumns = splitConditions(condText); // Передача строк
+
+    ctx.nodes.push({ id: hId, type: 'havingNode', data: { condition: condText, columns: condColumns }, position: { x: 0, y: 0 }});
     addEdge(ctx, currentOutputId, hId);
     processNestedQueries(condText, hId, `${prefix}having_`, dialect, ctx);
     currentOutputId = hId;
@@ -1784,21 +1812,23 @@ export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], dire
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
   
-  // --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+  // Устранение "дыр" при слиянии веток (ромбовидные зависимости)
   dagreGraph.setGraph({ 
     rankdir: direction, 
-    nodesep: 40,          // Минимальный вертикальный отступ между узлами
-    ranksep: 80,          // Горизонтальный отступ между колонками (слоями)
-    ranker: 'tight-tree'  // <-- КЛЮЧЕВОЙ ПАРАМЕТР: Прижимает ветки друг к другу
+    nodesep: 50,          
+    ranksep: 80,          
+    ranker: 'longest-path' 
   });
 
-  // Функция для динамического определения размеров
+  // Динамический расчет высоты, чтобы предотвратить наезжание узлов 
+  // (теперь filterNode тоже может растягиваться из-за поля columns)
   const getNodeDimensions = (node: GraphNode) => {
     let width = 250;
     let height = 100;
 
-    if (node.type === 'resultNode' && node.data?.columns) {
-      height = Math.max(100, 60 + node.data.columns.length * 28);
+    if (node.data?.columns && Array.isArray(node.data.columns)) {
+      height = Math.max(120, 80 + node.data.columns.length * 35);
+      width = 300; // Немного шире для длинных условий и ячеек
     } else if (['limitNode', 'sortNode', 'havingNode'].includes(node.type)) {
       height = 70;
       width = 200;
