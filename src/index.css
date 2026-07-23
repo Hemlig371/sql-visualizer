@@ -1,26 +1,45 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
-  --variant-dark: selector(.dark);
+  --color-slate-750: #263345;
+  --color-slate-850: #172033;
+  --color-slate-925: #0d1424;
 }
 
-/* Custom scrollbar styles for our dark Tauri-theme */
+/* Custom scrollbar styles */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
+/* Light theme scrollbars */
 ::-webkit-scrollbar-track {
-  background: #0b0f19;
+  background: #e2e8f0;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: #cbd5e1;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Dark theme scrollbars */
+.dark ::-webkit-scrollbar-track {
+  background: #172033;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #263345;
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
 
