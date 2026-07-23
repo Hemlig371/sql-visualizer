@@ -813,7 +813,7 @@ export function transformNodeSqlParserUnion(ast: any): any {
   return ast;
 }
 
-function parseTableOrSubquery(str: string, dialect: string): any {
+function parseTableOrSubquery(str: string, dialect: string): any {function parseTableOrSubquery(str: string, dialect: string): any {
   str = str.trim();
   if (!str) return null;
 
@@ -827,9 +827,9 @@ function parseTableOrSubquery(str: string, dialect: string): any {
       
       let alias: string | null = null;
       if (remainder) {
-        const aliasMatch = remainder.match(/^(?:AS\s+)?([A-Za-z0-9_\u0400-\u04FFёЁ]+)/i);
+        const aliasMatch = remainder.match(/^(?:AS\s+)?(["'`]?[A-Za-z0-9_\u0400-\u04FFёЁ]+["'`]?)/i);
         if (aliasMatch) {
-          alias = aliasMatch[1];
+          alias = aliasMatch[1].replace(/^["'`]|["'`]$/g, '');
         }
       }
       
@@ -847,8 +847,8 @@ function parseTableOrSubquery(str: string, dialect: string): any {
       const subquerySql = str.substring(1, closingIdx).trim();
       const afterSubquery = str.substring(closingIdx + 1).trim();
 
-      const aliasMatch = afterSubquery.match(/^(?:AS\s+)?([A-Za-z0-9_\u0400-\u04FFёЁ]+)/i);
-      const alias = aliasMatch ? aliasMatch[1] : `subquery`;
+      const aliasMatch = afterSubquery.match(/^(?:AS\s+)?(["'`]?[A-Za-z0-9_\u0400-\u04FFёЁ]+["'`]?)/i);
+      const alias = aliasMatch ? aliasMatch[1].replace(/^["'`]|["'`]$/g, '') : `subquery`;
 
       return {
         expr: {
@@ -859,24 +859,26 @@ function parseTableOrSubquery(str: string, dialect: string): any {
     }
   }
 
-  const asRegex = /\s+AS\s+([A-Za-z0-9_\u0400-\u04FFёЁ]+)/i;
+  // Обновленная регулярка: поддерживает кавычки и бэктики в явных алиасах
+  const asRegex = /\s+AS\s+(["'`]?[A-Za-z0-9_\u0400-\u04FFёЁ]+["'`]?)/i;
   const match = str.match(asRegex);
   if (match) {
-    const tableName = str.replace(asRegex, '').trim();
+    const tableName = str.substring(0, match.index).trim();
     return {
       table: tableName,
-      as: match[1]
+      as: match[1].replace(/^["'`]|["'`]$/g, '')
     };
   }
 
+  // Поддержка кавычек в неявных алиасах (через пробел)
   const spaceParts = str.split(/\s+/);
   if (spaceParts.length > 1) {
     const lastPart = spaceParts[spaceParts.length - 1];
-    if (/^[A-Za-z0-9_\u0400-\u04FFёЁ]+$/.test(lastPart)) {
+    if (/^["'`]?[A-Za-z0-9_\u0400-\u04FFёЁ]+["'`]?$/.test(lastPart)) {
       const tableName = str.substring(0, str.lastIndexOf(lastPart)).trim();
       return {
         table: tableName,
-        as: lastPart
+        as: lastPart.replace(/^["'`]|["'`]$/g, '')
       };
     }
   }
@@ -1436,15 +1438,39 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     });
   }
 
-  // 2. UNION Processing
+// 2. UNION Processing
   if (queryType === 'union') {
-    const unionId = `${prefix}union_node`;
-    ctx.nodes.push({ id: unionId, type: 'joinNode', data: { joinType: 'UNION' }, position: { x: 0, y: 0 }});
+    let currentUnionOutputId = '';
+    
     ast.queries.forEach((qAst: any, qIdx: number) => {
       const subOut = buildDataPipeline(qAst, `${prefix}union_q${qIdx}_`, dialect, ctx);
-      addEdge(ctx, subOut, unionId, ast.ops[qIdx - 1] || 'UNION');
+      
+      if (qIdx === 0) {
+        currentUnionOutputId = subOut;
+      } else {
+        const op = ast.ops[qIdx - 1] || 'UNION';
+        const unionStepId = `${prefix}union_step_${qIdx}`;
+        
+        // Используем filterNode вместо joinNode. У него нет пустого поля "ON", 
+        // и он выглядит как аккуратный логический шаг выполнения запроса.
+        ctx.nodes.push({ 
+          id: unionStepId, 
+          type: 'filterNode', 
+          data: { 
+            title: op.toUpperCase(), 
+            condition: 'Combines result sets' 
+          }, 
+          position: { x: 0, y: 0 }
+        });
+        
+        // Строим последовательный каскад слияний (A + B) + C
+        addEdge(ctx, currentUnionOutputId, unionStepId, 'top set');
+        addEdge(ctx, subOut, unionStepId, 'bottom set');
+        
+        currentUnionOutputId = unionStepId;
+      }
     });
-    return unionId;
+    return currentUnionOutputId;
   }
 
   // 3. DML / Procedures
@@ -1719,17 +1745,35 @@ export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], dire
   
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
-  dagreGraph.setGraph({ rankdir: direction, nodesep: 50, ranksep: 80 });
+  
+  // --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+  dagreGraph.setGraph({ 
+    rankdir: direction, 
+    nodesep: 40,          // Минимальный вертикальный отступ между узлами
+    ranksep: 80,          // Горизонтальный отступ между колонками (слоями)
+    ranker: 'tight-tree'  // <-- КЛЮЧЕВОЙ ПАРАМЕТР: Прижимает ветки друг к другу
+  });
 
-  const nodeWidth = 280;
-  const nodeHeight = 150;
+  // Функция для динамического определения размеров
+  const getNodeDimensions = (node: GraphNode) => {
+    let width = 250;
+    let height = 100;
+
+    if (node.type === 'resultNode' && node.data?.columns) {
+      height = Math.max(100, 60 + node.data.columns.length * 28);
+    } else if (['limitNode', 'sortNode', 'havingNode'].includes(node.type)) {
+      height = 70;
+      width = 200;
+    } else if (node.type === 'joinNode' || node.type === 'filterNode') {
+      height = 90;
+    }
+    
+    return { width, height };
+  };
 
   nodes.forEach((node) => {
-    let height = nodeHeight;
-    if (node.type === 'resultNode' && node.data?.columns) {
-      height = Math.max(nodeHeight, 80 + node.data.columns.length * 28);
-    }
-    dagreGraph.setNode(node.id, { width: nodeWidth, height });
+    const { width, height } = getNodeDimensions(node);
+    dagreGraph.setNode(node.id, { width, height });
   });
 
   edges.forEach((edge) => {
@@ -1740,21 +1784,16 @@ export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], dire
 
   const newNodes = nodes.map((node) => {
     const nodeWithPosition = dagreGraph.node(node.id);
-    
-    // БЕЗОПАСНОСТЬ: Игнорируем узлы, для которых Dagre не смог просчитать координаты
     if (!nodeWithPosition) return node;
 
-    let height = nodeHeight;
-    if (node.type === 'resultNode' && node.data?.columns) {
-      height = Math.max(nodeHeight, 80 + node.data.columns.length * 28);
-    }
+    const { width, height } = getNodeDimensions(node);
     
     return {
       ...node,
       targetPosition: isHorizontal ? 'left' as const : 'top' as const,
       sourcePosition: isHorizontal ? 'right' as const : 'bottom' as const,
       position: {
-        x: nodeWithPosition.x - nodeWidth / 2,
+        x: nodeWithPosition.x - width / 2,
         y: nodeWithPosition.y - height / 2,
       },
     };
