@@ -1,10 +1,6 @@
 name: Build Desktop Application (Tauri)
 
 on:
-  push:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 jobs:
