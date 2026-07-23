@@ -1343,9 +1343,7 @@ export function parseSqlToAst(sql: string, dialect: string): any {
   return parseSingleSqlToAst(cleanSql, dialect);
 }
 
-
-// --- 6. GRAPH VISUALIZATION ENGINE (REWRITTEN FOR DATA LINEAGE) ---
-
+// --- 6. GRAPH VISUALIZATION ENGINE ---
 export interface GraphContext {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -1361,7 +1359,7 @@ export interface GraphContext {
 function addEdge(ctx: GraphContext, source: string, target: string, label?: string, style?: any) {
   if (!source || !target) return;
   ctx.edges.push({
-    id: `edge_${source}_to_${target}_${Math.random().toString(36).substr(2, 5)}`,
+    id: `edge_${source}_to_${target}_${Math.random().toString(36).substring(2, 7)}`,
     source, target, label, animated: true, style
   });
 }
@@ -1386,18 +1384,17 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
 
   const queryType = ast.type || 'select';
 
-  // 1. CTEs (Common Table Expressions) - Поддержка обоих парсеров (ast.with и ast.ctes)
+  // 1. CTEs (Common Table Expressions)
   const ctesList = ast.ctes || ast.with || [];
   if (ctesList.length > 0) {
     ctesList.forEach((cte: any) => {
-      // Извлекаем имя, даже если парсер вернул объект { value: 'название' }
       let cteName = cte.name;
       if (cteName && typeof cteName === 'object' && cteName.value) {
         cteName = cteName.value;
       }
       cteName = String(cteName || `CTE_${Math.random().toString(36).substring(2, 7)}`).replace(/^["'`]|["'`]$/g, '').trim();
       
-      const cteAst = cte.ast || cte.stmt; // ast (эвристика) или stmt (node-sql-parser)
+      const cteAst = cte.ast || cte.stmt; 
       
       if (cteAst) {
         const ctePrefix = `${prefix}cte_${cteName}_`;
@@ -1411,7 +1408,6 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
         
         addEdge(ctx, cteOutputId, cteWrapId, 'defines CTE', { strokeDasharray: '4 4', stroke: '#64748b' });
         
-        // Регистрируем в нижнем регистре для точного связывания во FROM
         ctx.cteOutputIds[cteName.toLowerCase()] = cteWrapId;
       }
     });
@@ -1463,7 +1459,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
             const updateActionId = `${prefix}update_action`;
             ctx.nodes.push({ id: updateActionId, type: 'filterNode', data: { title: 'SET', iconType: 'edit' }, position: { x: 0, y: 0 }});
             addEdge(ctx, currentInputId, updateActionId);
-            targetIds.forEach(tId => addEdge(ctx, updateActionId, tId, 'updates'));
+            // Безопасный направленный граф: после SET данные уходят в результат, без цикла
             currentInputId = updateActionId;
           }
        }
@@ -1485,7 +1481,6 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     ast.from.forEach((fromItem: any, idx: number) => {
       let srcId = '';
       
-      // Ищем подзапрос в обоих форматах
       let subqueryAst = null;
       if (fromItem.expr) {
         if (fromItem.expr.ast) {
@@ -1496,14 +1491,12 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
       }
       
       if (subqueryAst) {
-        // Отрисовываем ветку подзапроса
         srcId = buildDataPipeline(subqueryAst, `${prefix}from_${idx}_`, dialect, ctx);
         const wrapperId = `${prefix}from_wrap_${idx}`;
         ctx.nodes.push({ id: wrapperId, type: 'tableNode', data: { label: fromItem.as || 'Subquery', isSubquery: true }, position: { x: 0, y: 0 }});
         addEdge(ctx, srcId, wrapperId, 'derived table', { strokeDasharray: '4 4' });
         srcId = wrapperId;
       } else {
-        // Ищем базовую таблицу или CTE
         let tName = fromItem.table;
         if (tName && typeof tName === 'object' && tName.value) tName = tName.value;
         tName = String(tName || 'UNKNOWN').replace(/^["'`]|["'`]$/g, '').trim();
@@ -1511,7 +1504,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
         const cteId = ctx.cteOutputIds[tName.toLowerCase()];
         
         if (cteId) {
-          srcId = cteId; // СВЯЗЫВАЕМ НАПРЯМУЮ С УЗЛОМ CTE
+          srcId = cteId; // Прямая связь с CTE
         } else {
           srcId = `${prefix}base_table_${idx}`;
           ctx.nodes.push({ id: srcId, type: 'tableNode', data: { label: tName, alias: fromItem.as }, position: { x: 0, y: 0 }});
@@ -1617,7 +1610,6 @@ export function astToGraph(
 
   if (!ast) return { nodes: ctx.nodes, edges: ctx.edges, outputId: '' };
 
-  // Entry logic: Collapse Top-Level Queries Only
   if (ast.type === 'multi_query') {
     let lastId = '';
     ast.queries.forEach((qAst: any, qIdx: number) => {
@@ -1645,7 +1637,7 @@ export function astToGraph(
         });
         
         if (lastId) addEdge(ctx, lastId, collapseId, 'Next', { strokeDasharray: '5 5' });
-        // Link collapse button to the start of this pipeline block visually
+        
         const firstNode = ctx.nodes.find(n => n.id.startsWith(`${prefix}q${qIdx}_`));
         if (firstNode) addEdge(ctx, collapseId, firstNode.id);
         
@@ -1655,7 +1647,6 @@ export function astToGraph(
     return { nodes: ctx.nodes, edges: ctx.edges, outputId: lastId };
   }
 
-  // Procedures Container Fallback
   if (ast.type === 'procedure') {
      const procId = `${prefix}proc`;
      ctx.nodes.push({ id: procId, type: 'tableNode', data: { label: ast.name, title: 'PROCEDURE' }, position: { x: 0, y: 0 }});
@@ -1676,7 +1667,6 @@ export function astToGraph(
      return { nodes: ctx.nodes, edges: ctx.edges, outputId: lastStepId };
   }
 
-  // Single Standard Query
   const finalId = buildDataPipeline(ast, prefix, dialect, ctx);
   return { nodes: ctx.nodes, edges: ctx.edges, outputId: finalId };
 }
@@ -1707,6 +1697,10 @@ export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], dire
 
   const newNodes = nodes.map((node) => {
     const nodeWithPosition = dagreGraph.node(node.id);
+    
+    // БЕЗОПАСНОСТЬ: Игнорируем узлы, для которых Dagre не смог просчитать координаты
+    if (!nodeWithPosition) return node;
+
     let height = nodeHeight;
     if (node.type === 'resultNode' && node.data?.columns) {
       height = Math.max(nodeHeight, 80 + node.data.columns.length * 28);
