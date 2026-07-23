@@ -825,16 +825,19 @@ export function transformNodeSqlParserUnion(ast: any): any {
   if (!ast) return ast;
   if (Array.isArray(ast)) return ast.map(transformNodeSqlParserUnion);
   
-  if (ast.type === 'select' && (ast._next || ast.union)) {
+  // Добавлена поддержка ast.set_op (в нем хранится UNION ALL)
+  if (ast.type === 'select' && (ast._next || ast.union || ast.set_op)) {
     const queries: any[] = [];
     const ops: string[] = [];
     
     let current = ast;
     while (current) {
-      const { _next, union, ...rest } = current;
+      const { _next, union, set_op, ...rest } = current;
       queries.push(rest);
       
-      if (union) {
+      if (set_op) {
+        ops.push(String(set_op).toUpperCase());
+      } else if (union) {
         const opType = typeof union === 'string' ? `UNION ${union.toUpperCase()}` : 'UNION';
         ops.push(opType);
       } else if (_next) {
@@ -1812,28 +1815,30 @@ export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], dire
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
   
-  // Устранение "дыр" при слиянии веток (ромбовидные зависимости)
   dagreGraph.setGraph({ 
     rankdir: direction, 
-    nodesep: 50,          
-    ranksep: 80,          
-    ranker: 'longest-path' 
+    nodesep: 30, // Уменьшили верт. отступ (так как высота узлов теперь честная)
+    ranksep: 80, 
+    ranker: 'tight-tree' 
   });
 
-  // Динамический расчет высоты, чтобы предотвратить наезжание узлов 
-  // (теперь filterNode тоже может растягиваться из-за поля columns)
+  // Строго ограничиваем высоту (Math.min), чтобы она совпадала с Tailwind 'max-h-56' (224px + отступы)
   const getNodeDimensions = (node: GraphNode) => {
-    let width = 250;
-    let height = 100;
+    let width = 256; // Строго Tailwind w-64
+    let height = 90;
 
-    if (node.data?.columns && Array.isArray(node.data.columns)) {
-      height = Math.max(120, 80 + node.data.columns.length * 35);
-      width = 300; // Немного шире для длинных условий и ячеек
-    } else if (['limitNode', 'sortNode', 'havingNode'].includes(node.type)) {
+    if (['resultNode', 'filterNode', 'havingNode'].includes(node.type)) {
+      const rows = node.data?.columns?.length || 1;
+      // Каждый row ~45px. Максимум высоты 280px (Tailwind max-h-56 + header)
+      height = Math.min(280, 70 + rows * 45); 
+    } else if (node.type === 'tableNode') {
+      const rows = node.data?.columns?.length || 1;
+      // У таблицы max-h-48. Максимум высоты ~ 250px
+      height = Math.min(250, 90 + rows * 30);
+    } else if (['limitNode', 'sortNode'].includes(node.type)) {
       height = 70;
-      width = 200;
-    } else if (node.type === 'joinNode' || node.type === 'filterNode') {
-      height = 90;
+    } else if (node.type === 'joinNode') {
+      height = 100;
     }
     
     return { width, height };
