@@ -117,8 +117,26 @@ export const FilterNode = memo(({ data, selected, targetPosition, sourcePosition
         </span>
       </div>
       <div className="p-3 dark:bg-slate-950/40 bg-slate-900/20">
-        <div className="text-[10px] font-mono dark:text-slate-300 text-slate-300 dark:bg-slate-950 bg-slate-900 p-2 rounded border dark:border-slate-800 border-slate-700 break-words max-h-24 overflow-y-auto">
-          {data.condition || 'N/A'}
+        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+          {data.columns && data.columns.length > 0 ? (
+            data.columns.map((col: any, idx: number) => {
+              const isOp = col.name.toUpperCase().startsWith('AND ') || col.name.toUpperCase().startsWith('OR ');
+              const text = isOp ? col.name.substring(col.name.indexOf(' ') + 1) : col.name;
+              const op = isOp ? col.name.substring(0, col.name.indexOf(' ')) : '';
+              return (
+                <div key={idx} className="flex flex-col">
+                  {op && <span className="text-[9px] font-bold text-orange-500 mb-0.5 ml-1">{op}</span>}
+                  <div className="dark:bg-slate-950 bg-slate-900 p-1.5 rounded border dark:border-slate-800 border-slate-700 text-[10px] font-mono dark:text-slate-300 text-slate-300 break-words">
+                    {text}
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="text-[10px] font-mono dark:text-slate-300 text-slate-300 dark:bg-slate-950 bg-slate-900 p-2 rounded border dark:border-slate-800 border-slate-700 break-words">
+              {data.condition || 'N/A'}
+            </div>
+          )}
         </div>
       </div>
       <Handle type="target" position={targetPosition || Position.Left} className="w-3 h-3 dark:!bg-slate-950 !bg-slate-800 dark:!border-slate-600 !border-slate-700" />
@@ -159,8 +177,26 @@ export const HavingNode = memo(({ data, selected, targetPosition, sourcePosition
         <span className="text-[10px] font-bold uppercase dark:text-rose-400 text-rose-600 tracking-wider">HavingNode</span>
       </div>
       <div className="p-3 dark:bg-slate-950/40 bg-slate-900/20">
-        <div className="text-[10px] font-mono dark:text-slate-300 text-slate-300 dark:bg-slate-950 bg-slate-900 p-2 rounded border dark:border-slate-800 border-slate-700 break-words">
-          {data.condition}
+        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+          {data.columns && data.columns.length > 0 ? (
+            data.columns.map((col: any, idx: number) => {
+              const isOp = col.name.toUpperCase().startsWith('AND ') || col.name.toUpperCase().startsWith('OR ');
+              const text = isOp ? col.name.substring(col.name.indexOf(' ') + 1) : col.name;
+              const op = isOp ? col.name.substring(0, col.name.indexOf(' ')) : '';
+              return (
+                <div key={idx} className="flex flex-col">
+                  {op && <span className="text-[9px] font-bold text-rose-500 mb-0.5 ml-1">{op}</span>}
+                  <div className="dark:bg-slate-950 bg-slate-900 p-1.5 rounded border dark:border-slate-800 border-slate-700 text-[10px] font-mono dark:text-slate-300 text-slate-300 break-words">
+                    {text}
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="text-[10px] font-mono dark:text-slate-300 text-slate-300 dark:bg-slate-950 bg-slate-900 p-2 rounded border dark:border-slate-800 border-slate-700 break-words">
+              {data.condition || 'N/A'}
+            </div>
+          )}
         </div>
       </div>
       <Handle type="target" position={targetPosition || Position.Left} className="w-3 h-3 dark:!bg-slate-950 !bg-slate-800 dark:!border-slate-600 !border-slate-700" />
