@@ -813,7 +813,7 @@ export function transformNodeSqlParserUnion(ast: any): any {
   return ast;
 }
 
-function parseTableOrSubquery(str: string, dialect: string): any {function parseTableOrSubquery(str: string, dialect: string): any {
+function parseTableOrSubquery(str: string, dialect: string): any {
   str = str.trim();
   if (!str) return null;
 
