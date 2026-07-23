@@ -42,13 +42,13 @@ import { nodeTypes } from './components/CustomNodes';
 import { sqlPresets, SQLPreset } from './components/SQLPresets';
 
 export default function App() {
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [theme, setTheme] = useState<'dark' | 'light'>('light');
   const [sql, setSql] = useState<string>(sqlPresets[0].sql);
   const [dialect, setDialect] = useState<'PostgreSQL' | 'Oracle' | 'Clickhouse'>('PostgreSQL');
   const [direction, setDirection] = useState<'LR' | 'TB'>('LR');
   const [activePresetId, setActivePresetId] = useState<string>(sqlPresets[0].id);
-  const [showSortNodes, setShowSortNodes] = useState<boolean>(true);
-  const [showLimitNodes, setShowLimitNodes] = useState<boolean>(true);
+  const [showSortNodes, setShowSortNodes] = useState<boolean>(false);
+  const [showLimitNodes, setShowLimitNodes] = useState<boolean>(false);
   
     const [expandedQueries, setExpandedQueries] = useState<Set<string>>(new Set());
 
