@@ -156,7 +156,6 @@ export function stripCommentsSafely(sql: string): string {
     .join('');
 }
 
-
 // --- 2. EXPRESSION FORMATTER ---
 
 export function formatExpr(expr: any): string {
@@ -265,7 +264,6 @@ export function formatExpr(expr: any): string {
       return '';
   }
 }
-
 
 // --- 3. TOKENS-BASED UTILITIES ---
 
@@ -449,7 +447,6 @@ function findTopLevelKeywordIndex(sql: string, keywordRegex: RegExp): number {
   return -1;
 }
 
-
 // --- 4. PROCEDURES AND DML SPLITTERS ---
 
 function splitProcedureStatements(bodyStr: string): string[] {
@@ -465,11 +462,10 @@ function splitProcedureStatements(bodyStr: string): string[] {
       if (t.value === '(') parenDepth++;
       else if (t.value === ')') parenDepth = Math.max(0, parenDepth - 1);
       else if (t.value === ';' && parenDepth === 0) {
-        // Стандартное разделение по точке с запятой
         const stmt = bodyStr.substring(currentStart, t.start).trim();
         if (stmt) statements.push(stmt);
         currentStart = t.end;
-        lastWord = ''; // сброс после ;
+        lastWord = ''; 
       }
     } else if (t.type === 'word') {
       const upper = t.value.toUpperCase();
@@ -602,7 +598,6 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
   }
   return null;
 }
-
 
 // --- 5. PARSERS & AST GENERATORS ---
 
@@ -1345,7 +1340,234 @@ export function parseSqlToAst(sql: string, dialect: string): any {
 }
 
 
-// --- 6. GRAPH VISUALIZATION ENGINE ---
+// --- 6. GRAPH VISUALIZATION ENGINE (REWRITTEN FOR DATA LINEAGE) ---
+
+export interface GraphContext {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  cteOutputIds: Record<string, string>;
+  options: { 
+    showSort?: boolean; 
+    showLimit?: boolean; 
+    expandedQueries?: Set<string>; 
+    onToggleExpand?: (id: string) => void;
+  };
+}
+
+function addEdge(ctx: GraphContext, source: string, target: string, label?: string, style?: any) {
+  if (!source || !target) return;
+  ctx.edges.push({
+    id: `edge_${source}_to_${target}_${Math.random().toString(36).substr(2, 5)}`,
+    source, target, label, animated: true, style
+  });
+}
+
+function processNestedQueries(text: string, targetNodeId: string, prefix: string, dialect: string, ctx: GraphContext) {
+  const nested = extractSubqueriesFromString(text);
+  nested.forEach((item, idx) => {
+    try {
+      const subPrefix = `${prefix}subq_${idx}_`;
+      const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
+      const subOutputId = buildDataPipeline(parsedSub, subPrefix, dialect, ctx);
+      if (subOutputId) {
+        addEdge(ctx, subOutputId, targetNodeId, 'scalar / constraint', { stroke: '#64748b', strokeDasharray: '4 4' });
+      }
+    } catch (e) {}
+  });
+}
+
+function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: GraphContext): string {
+  if (!ast) return '';
+  if (Array.isArray(ast)) ast = ast[0];
+
+  const queryType = ast.type || 'select';
+
+  // 1. CTEs (Common Table Expressions)
+  if (ast.ctes && ast.ctes.length > 0) {
+    ast.ctes.forEach((cte: any) => {
+      const ctePrefix = `${prefix}cte_${cte.name}_`;
+      const cteOutputId = buildDataPipeline(cte.ast, ctePrefix, dialect, ctx);
+      
+      const cteWrapId = `${prefix}cte_wrap_${cte.name}`;
+      ctx.nodes.push({
+        id: cteWrapId, type: 'tableNode',
+        data: { label: cte.name, title: 'CTE (With Statement)', isSubquery: true }, position: { x: 0, y: 0 }
+      });
+      addEdge(ctx, cteOutputId, cteWrapId, 'defines');
+      ctx.cteOutputIds[cte.name.toLowerCase()] = cteWrapId;
+    });
+  }
+
+  // 2. UNION Processing
+  if (queryType === 'union') {
+    const unionId = `${prefix}union_node`;
+    ctx.nodes.push({ id: unionId, type: 'joinNode', data: { joinType: 'UNION' }, position: { x: 0, y: 0 }});
+    ast.queries.forEach((qAst: any, qIdx: number) => {
+      const subOut = buildDataPipeline(qAst, `${prefix}union_q${qIdx}_`, dialect, ctx);
+      addEdge(ctx, subOut, unionId, ast.ops[qIdx - 1] || 'UNION');
+    });
+    return unionId;
+  }
+
+  // 3. DML / Procedures
+  if (['insert', 'update', 'delete', 'merge', 'truncate', 'refresh_view'].includes(queryType)) {
+    const targetTables = ast.table ? (Array.isArray(ast.table) ? ast.table : [ast.table]) : [{ table: 'TARGET_TABLE' }];
+    const targetIds: string[] = [];
+    
+    targetTables.forEach((t: any, tIdx: number) => {
+      const tId = `${prefix}target_${tIdx}`;
+      ctx.nodes.push({ id: tId, type: 'tableNode', data: { label: t.table || 'TARGET', title: `Target (${queryType.toUpperCase()})` }, position: { x: 0, y: 0 }});
+      targetIds.push(tId);
+    });
+
+    let currentInputId = targetIds[0];
+
+    if (queryType === 'insert') {
+      if (ast.values && (ast.values.type === 'select' || ast.values.type === 'union')) {
+        const srcId = buildDataPipeline(ast.values, `${prefix}ins_src_`, dialect, ctx);
+        targetIds.forEach(tId => addEdge(ctx, srcId, tId, 'INSERT INTO'));
+      } else {
+        const srcId = `${prefix}values_src`;
+        ctx.nodes.push({ id: srcId, type: 'constantNode', data: { title: 'VALUES Source' }, position: { x: 0, y: 0 }});
+        targetIds.forEach(tId => addEdge(ctx, srcId, tId, 'INSERT INTO'));
+      }
+    } else if (queryType === 'update' || queryType === 'delete') {
+       if (ast.where) {
+          const filterId = `${prefix}dml_where`;
+          const cond = formatExpr(ast.where);
+          ctx.nodes.push({ id: filterId, type: 'filterNode', data: { title: 'WHERE', condition: cond }, position: { x: 0, y: 0 }});
+          targetIds.forEach(tId => addEdge(ctx, tId, filterId, 'reads from'));
+          processNestedQueries(cond, filterId, `${prefix}dml_`, dialect, ctx);
+          currentInputId = filterId;
+          
+          if (queryType === 'update') {
+            const updateActionId = `${prefix}update_action`;
+            ctx.nodes.push({ id: updateActionId, type: 'filterNode', data: { title: 'SET', iconType: 'edit' }, position: { x: 0, y: 0 }});
+            addEdge(ctx, currentInputId, updateActionId);
+            targetIds.forEach(tId => addEdge(ctx, updateActionId, tId, 'updates')); // loop back
+            currentInputId = updateActionId;
+          }
+       }
+    }
+
+    const resId = `${prefix}dml_result`;
+    ctx.nodes.push({ id: resId, type: 'resultNode', data: { title: `Operation: ${queryType.toUpperCase()}` }, position: { x: 0, y: 0 }});
+    addEdge(ctx, currentInputId, resId);
+    return resId;
+  }
+
+  // 4. MAIN SELECT PIPELINE (Data Lineage Flow)
+  let currentOutputId = '';
+
+  // 4.1 FROM & JOINS
+  if (ast.from && ast.from.length > 0) {
+    const fromIds: string[] = [];
+    
+    ast.from.forEach((fromItem: any, idx: number) => {
+      let srcId = '';
+      if (fromItem.expr && fromItem.expr.ast) {
+        srcId = buildDataPipeline(fromItem.expr.ast, `${prefix}from_${idx}_`, dialect, ctx);
+        const wrapperId = `${prefix}from_wrap_${idx}`;
+        ctx.nodes.push({ id: wrapperId, type: 'tableNode', data: { label: fromItem.as || 'Subquery', isSubquery: true }, position: { x: 0, y: 0 }});
+        addEdge(ctx, srcId, wrapperId, 'derived table', { strokeDasharray: '4 4' });
+        srcId = wrapperId;
+      } else {
+        const tName = fromItem.table || 'UNKNOWN';
+        const cteId = ctx.cteOutputIds[tName.toLowerCase()];
+        if (cteId) {
+          srcId = cteId; // Connect directly to CTE
+        } else {
+          srcId = `${prefix}base_table_${idx}`;
+          ctx.nodes.push({ id: srcId, type: 'tableNode', data: { label: tName, alias: fromItem.as }, position: { x: 0, y: 0 }});
+        }
+      }
+      
+      if (idx === 0) {
+        fromIds.push(srcId);
+        currentOutputId = srcId;
+      } else {
+        const joinId = `${prefix}join_${idx}`;
+        ctx.nodes.push({ id: joinId, type: 'joinNode', data: { joinType: fromItem.join || 'JOIN', condition: fromItem.on ? formatExpr(fromItem.on) : '' }, position: { x: 0, y: 0 }});
+        addEdge(ctx, currentOutputId, joinId, 'left');
+        addEdge(ctx, srcId, joinId, 'right');
+        currentOutputId = joinId;
+      }
+    });
+  } else {
+    currentOutputId = `${prefix}const_src`;
+    ctx.nodes.push({ id: currentOutputId, type: 'constantNode', data: { title: 'Constant Source' }, position: { x: 0, y: 0 }});
+  }
+
+  // 4.2 WHERE / PREWHERE Filters
+  if (ast.prewhere || ast.where) {
+    const filters = [ { t: 'PREWHERE', val: ast.prewhere }, { t: 'WHERE', val: ast.where }].filter(f => f.val);
+    filters.forEach(f => {
+      const fId = `${prefix}filter_${f.t.toLowerCase()}`;
+      const condText = formatExpr(f.val);
+      ctx.nodes.push({ id: fId, type: 'filterNode', data: { title: f.t, condition: condText }, position: { x: 0, y: 0 }});
+      addEdge(ctx, currentOutputId, fId);
+      processNestedQueries(condText, fId, `${prefix}${f.t}_`, dialect, ctx);
+      currentOutputId = fId;
+    });
+  }
+
+  // 4.3 Hierarchical
+  if (ast.start_with || ast.connect_by) {
+    const hId = `${prefix}hierarchy`;
+    ctx.nodes.push({ id: hId, type: 'filterNode', data: { title: 'Hierarchical Query' }, position: { x: 0, y: 0 }});
+    addEdge(ctx, currentOutputId, hId);
+    currentOutputId = hId;
+  }
+
+  // 4.4 GROUP BY
+  if (ast.groupby && ast.groupby.length > 0) {
+    const gId = `${prefix}groupby`;
+    ctx.nodes.push({ id: gId, type: 'groupByNode', data: { columns: ast.groupby.map((c: any) => formatExpr(c)).join(', ') }, position: { x: 0, y: 0 }});
+    addEdge(ctx, currentOutputId, gId);
+    currentOutputId = gId;
+  }
+
+  // 4.5 HAVING
+  if (ast.having) {
+    const hId = `${prefix}having`;
+    const condText = formatExpr(ast.having);
+    ctx.nodes.push({ id: hId, type: 'havingNode', data: { condition: condText }, position: { x: 0, y: 0 }});
+    addEdge(ctx, currentOutputId, hId);
+    processNestedQueries(condText, hId, `${prefix}having_`, dialect, ctx);
+    currentOutputId = hId;
+  }
+
+  // 4.6 ORDER BY & LIMIT
+  if (ast.orderby && ctx.options.showSort !== false) {
+    const oId = `${prefix}orderby`;
+    ctx.nodes.push({ id: oId, type: 'sortNode', data: { details: ast.orderby.map((i: any) => `${formatExpr(i.expr)} ${i.type || 'ASC'}`).join(', ') }, position: { x: 0, y: 0 }});
+    addEdge(ctx, currentOutputId, oId);
+    currentOutputId = oId;
+  }
+  if (ast.limit && ctx.options.showLimit !== false) {
+    const lId = `${prefix}limit`;
+    const lVal = ast.limit.value?.[0]?.value || '0';
+    ctx.nodes.push({ id: lId, type: 'limitNode', data: { details: `Limit: ${lVal}` }, position: { x: 0, y: 0 }});
+    addEdge(ctx, currentOutputId, lId);
+    currentOutputId = lId;
+  }
+
+  // 4.7 PROJECTION (SELECT Columns)
+  const resId = `${prefix}projection`;
+  const resultCols = ast.columns === '*' ? [{ name: '*' }] : (Array.isArray(ast.columns) ? ast.columns.map((col: any) => ({ name: formatExpr(col.expr), alias: col.as })) : [{ name: '*' }]);
+  
+  ctx.nodes.push({ id: resId, type: 'resultNode', data: { title: 'Projection', columns: resultCols }, position: { x: 0, y: 0 }});
+  addEdge(ctx, currentOutputId, resId);
+
+  if (Array.isArray(ast.columns)) {
+    ast.columns.forEach((col: any, cIdx: number) => {
+       const colText = formatExpr(col.expr);
+       processNestedQueries(colText, resId, `${prefix}proj_${cIdx}_`, dialect, ctx);
+    });
+  }
+
+  return resId;
+}
 
 export function astToGraph(
   ast: any,
@@ -1353,640 +1575,74 @@ export function astToGraph(
   dialect = 'PostgreSQL',
   cteTableNodeIds: Record<string, string> = {},
   options: { showSort?: boolean; showLimit?: boolean; expandedQueries?: Set<string>; onToggleExpand?: (id: string) => void } = { showSort: true, showLimit: true }
-): { nodes: any[]; edges: any[]; outputId: string } {
-  let nodes: any[] = [];
-  let edges: any[] = [];
-
-  if (!ast) return { nodes, edges, outputId: '' };
-
-  if (ast.type === 'multi_query') {
-    let lastOutputId = '';
-    ast.queries.forEach((qAst: any, qIdx: number) => {
-      const qPrefix = `${prefix}q${qIdx}_`;
-      const queryId = `${prefix}query_block_${qIdx}`;
-      
-      const isExpanded = options.expandedQueries && options.expandedQueries.has(queryId);
-      
-      if (!isExpanded) {
-        const title = `Query ${qIdx + 1}`;
-        let snippet = '';
-        if (qAst.type === 'select') snippet = 'SELECT ...';
-        else if (qAst.type === 'insert') snippet = 'INSERT INTO ...';
-        else if (qAst.type === 'update') snippet = 'UPDATE ...';
-        else if (qAst.type === 'delete') snippet = 'DELETE FROM ...';
-        else if (qAst.type === 'merge') snippet = 'MERGE INTO ...';
-        else if (qAst.type === 'statement') snippet = qAst.text || 'STATEMENT';
-        
-        nodes.push({
-          id: queryId, type: 'queryGroupNode',
-          data: { title, queryText: snippet, queryId, onToggle: options.onToggleExpand },
-          position: { x: 0, y: 0 }
-        });
-        
-        if (lastOutputId) {
-          edges.push({
-            id: `${prefix}multi_query_link_${qIdx}`, source: lastOutputId, target: queryId, animated: true,
-            label: 'Next', style: { stroke: '#64748b', strokeDasharray: '5 5' }
-          });
-        }
-        lastOutputId = queryId;
-      } else {
-        const qResult = astToGraph(qAst, qPrefix, dialect, cteTableNodeIds, options);
-        nodes.push(...qResult.nodes);
-        edges.push(...qResult.edges);
-        
-        const collapseId = `${queryId}_collapse`;
-        nodes.push({
-          id: collapseId, type: 'collapseNode',
-          data: { title: `Hide Query ${qIdx + 1}`, queryId: queryId, onToggle: () => options.onToggleExpand?.(queryId) },
-          position: { x: 0, y: 0 }
-        });
-        
-        if (lastOutputId) {
-          edges.push({
-            id: `${prefix}multi_query_link_${qIdx}`, source: lastOutputId, target: collapseId, animated: true,
-            label: 'Next', style: { stroke: '#64748b', strokeDasharray: '5 5' }
-          });
-        }
-        
-        if (qResult.nodes.length > 0) {
-           const firstNode = qResult.nodes.find(n => n.type === 'tableNode' || n.type === 'constantNode') || qResult.nodes[0];
-           edges.push({ id: `${prefix}collapse_link_${qIdx}`, source: collapseId, target: firstNode.id, animated: true });
-        }
-        
-        if (qResult.outputId) {
-          lastOutputId = qResult.outputId;
-        } else if (qResult.nodes.length > 0) {
-          lastOutputId = qResult.nodes[qResult.nodes.length - 1].id;
-        } else {
-          lastOutputId = collapseId;
-        }
-      }
-    });
-    return { nodes, edges, outputId: lastOutputId };
-  }
-
-  if (Array.isArray(ast)) ast = ast[0];
-  if (!ast) return { nodes, edges, outputId: '' };
-
-  if (ast.type === 'union') {
-    let leftNodeId = '';
-    const currentCteTableNodeIds = { ...cteTableNodeIds };
-
-    ast.queries.forEach((qAst: any, qIdx: number) => {
-      const qPrefix = `${prefix}union_q${qIdx}_`;
-      const qResult = astToGraph(qAst, qPrefix, dialect, currentCteTableNodeIds, options);
-      nodes.push(...qResult.nodes);
-      edges.push(...qResult.edges);
-
-      const subOutputId = qResult.outputId || (qResult.nodes.length > 0 ? qResult.nodes[qResult.nodes.length - 1].id : '');
-
-      if (qIdx === 0) {
-        leftNodeId = subOutputId;
-      } else {
-        const unionOpId = `${prefix}union_op_${qIdx}`;
-        const opName = ast.ops[qIdx - 1] || 'UNION';
-
-        nodes.push({
-          id: unionOpId, type: 'joinNode',
-          data: { joinType: opName, condition: 'ALL ROWS / CORRESPONDING' }, position: { x: 0, y: 0 }
-        });
-        if (leftNodeId) edges.push({ id: `${prefix}edge_union_left_${qIdx}`, source: leftNodeId, target: unionOpId, animated: true });
-        if (subOutputId) edges.push({ id: `${prefix}edge_union_right_${qIdx}`, source: subOutputId, target: unionOpId, animated: true });
-        leftNodeId = unionOpId;
-      }
-    });
-    return { nodes, edges, outputId: leftNodeId };
-  }
-
-  const currentCteTableNodeIds = { ...cteTableNodeIds };
-
-  if (ast.type === 'procedure') {
-    const entryNodeId = `${prefix}proc_entry`;
-    nodes.push({ id: entryNodeId, type: 'tableNode', data: { label: ast.name, alias: ast.dialect, title: 'PROCEDURE ENTRY POINT' }, position: { x: 0, y: 0 } });
-    let lastStepId = entryNodeId;
-
-    if (ast.variables && ast.variables.length > 0) {
-      const varsNodeId = `${prefix}proc_vars`;
-      nodes.push({ id: varsNodeId, type: 'constantNode', data: { title: 'LOCAL DECLARED VARIABLES', details: ast.variables.join('\n') }, position: { x: 0, y: 0 } });
-      edges.push({ id: `${prefix}edge_proc_vars`, source: lastStepId, target: varsNodeId, animated: true, label: 'declares' });
-      lastStepId = varsNodeId;
-    }
-
-    if (ast.parameters && ast.parameters.length > 0) {
-      const paramsNodeId = `${prefix}proc_params`;
-      nodes.push({ id: paramsNodeId, type: 'filterNode', data: { title: 'PARAMETERS / ARGUMENTS', condition: ast.parameters.join('\n'), iconType: 'edit' }, position: { x: 0, y: 0 } });
-      edges.push({ id: `${prefix}edge_proc_params`, source: entryNodeId, target: paramsNodeId, animated: true });
-    }
-
-    const groupedSteps: any[] = [];
-    let currentSimpleGroup: any[] = [];
-
-    const isSimpleStep = (step: any) => {
-      // Исключаем procedure_step и control_step из группировки
-      return !step.parsedQuery && (step.type === 'assignment_step' || step.type === 'statement' || step.type === 'exception_block');
-    };
-
-    ast.steps.forEach((step: any) => {
-      if (isSimpleStep(step)) {
-        currentSimpleGroup.push(step);
-      } else {
-        if (currentSimpleGroup.length > 0) {
-          groupedSteps.push({ type: 'simple_group', steps: currentSimpleGroup });
-          currentSimpleGroup = [];
-        }
-        groupedSteps.push(step);
-      }
-    });
-    if (currentSimpleGroup.length > 0) groupedSteps.push({ type: 'simple_group', steps: currentSimpleGroup });
-
-    groupedSteps.forEach((group: any, gIdx: number) => {
-      if (group.type === 'simple_group') {
-        const groupNodeId = `${prefix}proc_group_${gIdx}`;
-        const details = group.steps.map((s: any) => s.text).join('\n\n');
-        
-        nodes.push({ id: groupNodeId, type: 'constantNode', data: { title: '⚙️ LOCAL OPERATIONS / STATE', details: details }, position: { x: 0, y: 0 } });
-        edges.push({ id: `${prefix}edge_proc_group_${gIdx}`, source: lastStepId, target: groupNodeId, animated: true, label: 'Ops' });
-        lastStepId = groupNodeId;
-
-        const nestedQueries = extractSubqueriesFromString(details);
-        nestedQueries.forEach((item, subIdx) => {
-          try {
-            const nestedPrefix = `${prefix}proc_grp_${gIdx}_sub_${subIdx}_`;
-            const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
-            const subResult = astToGraph(parsedSub, nestedPrefix, dialect, currentCteTableNodeIds, options);
-            nodes.push(...subResult.nodes);
-            edges.push(...subResult.edges);
-
-            if (subResult.outputId) {
-              edges.push({
-                id: `${prefix}edge_proc_grp_${gIdx}_sub_${subIdx}`, source: subResult.outputId, target: groupNodeId, 
-                animated: true, style: { strokeDasharray: '4 4' }, label: 'eval query'
-              });
-            }
-          } catch (e) {}
-        });
-
-      } else {
-        const step = group;
-        const stepNodeId = `${prefix}proc_step_${gIdx}`;
-
-        if (step.parsedQuery) {
-          const queryId = `${prefix}proc_step_group_${gIdx}`;
-          const stepPrefix = `${prefix}step_${gIdx}_`;
-          const isExpanded = options.expandedQueries && options.expandedQueries.has(queryId);
-          
-          if (!isExpanded) {
-            let snippet = '';
-            if (step.parsedQuery.type === 'select') snippet = 'SELECT ...';
-            else if (step.parsedQuery.type === 'insert') snippet = 'INSERT INTO ...';
-            else if (step.parsedQuery.type === 'update') snippet = 'UPDATE ...';
-            else if (step.parsedQuery.type === 'delete') snippet = 'DELETE FROM ...';
-            else if (step.parsedQuery.type === 'merge') snippet = 'MERGE INTO ...';
-            else if (step.parsedQuery.type === 'statement') snippet = step.parsedQuery.text || 'STATEMENT';
-            else if (step.parsedQuery.type === 'procedure') snippet = step.text || 'PROCEDURE BODY';
-            
-            nodes.push({ id: queryId, type: 'queryGroupNode', data: { title: step.title || `Step ${gIdx + 1}`, queryText: snippet || step.text, queryId: queryId, onToggle: options.onToggleExpand }, position: { x: 0, y: 0 } });
-            edges.push({ id: `${prefix}edge_proc_group_step_${gIdx}`, source: lastStepId, target: queryId, animated: true, label: 'Flow' });
-            lastStepId = queryId;
-          } else {
-            const subResult = astToGraph(step.parsedQuery, stepPrefix, dialect, currentCteTableNodeIds, options);
-            nodes.push(...subResult.nodes);
-            edges.push(...subResult.edges);
-
-            const collapseId = `${queryId}_collapse`;
-            nodes.push({ id: collapseId, type: 'collapseNode', data: { title: `Hide ${step.title || 'Step'}`, queryId: queryId, onToggle: options.onToggleExpand }, position: { x: 0, y: 0 } });
-            edges.push({ id: `${prefix}edge_proc_collapse_step_${gIdx}`, source: lastStepId, target: collapseId, animated: true, label: 'Flow' });
-
-            const firstNodes = subResult.nodes.filter(n => n.type === 'tableNode' && !n.id.includes('subquery_wrapper'));
-            if (firstNodes.length > 0) {
-              firstNodes.forEach((fn, fIdx) => { edges.push({ id: `${prefix}edge_step_link_${gIdx}_${fIdx}`, source: collapseId, target: fn.id, animated: true }); });
-            } else if (subResult.nodes.length > 0) {
-              edges.push({ id: `${prefix}edge_step_link_fb_${gIdx}`, source: collapseId, target: subResult.nodes[0].id, animated: true });
-            }
-
-            if (subResult.outputId) lastStepId = subResult.outputId;
-            else if (subResult.nodes.length > 0) lastStepId = subResult.nodes[subResult.nodes.length - 1].id;
-            else lastStepId = collapseId;
-          }
-        } else {
-          let nodeType = 'filterNode';
-          let title = step.title;
-          let displayContent = step.text;
-
-          if (step.type === 'conditional_step') { nodeType = 'filterNode'; title = `❓ ${step.title}`; } 
-          else if (step.type === 'loop_step') { nodeType = 'groupByNode'; title = `🔄 ${step.title}`; }
-          else if (step.type === 'control_step') { nodeType = 'filterNode'; title = `↪️ ${step.title}`; }
-
-          nodes.push({ id: stepNodeId, type: nodeType, data: { title: title, condition: displayContent, columns: displayContent }, position: { x: 0, y: 0 } });
-          edges.push({ id: `${prefix}edge_proc_step_${gIdx}`, source: lastStepId, target: stepNodeId, animated: true, label: 'Flow' });
-          lastStepId = stepNodeId;
-
-          const nestedQueries = extractSubqueriesFromString(displayContent);
-          nestedQueries.forEach((item, subIdx) => {
-            try {
-              const nestedPrefix = `${prefix}proc_step_${gIdx}_sub_${subIdx}_`;
-              const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
-              const subResult = astToGraph(parsedSub, nestedPrefix, dialect, currentCteTableNodeIds, options);
-              nodes.push(...subResult.nodes);
-              edges.push(...subResult.edges);
-
-              if (subResult.outputId) {
-                edges.push({
-                  id: `${prefix}edge_proc_step_${gIdx}_sub_${subIdx}`, source: subResult.outputId, target: stepNodeId, 
-                  animated: true, style: { strokeDasharray: '4 4' }, label: 'eval query'
-                });
-              }
-            } catch (e) {}
-          });
-        }
-      }
-    });
-
-    const endId = `${prefix}proc_end`;
-    nodes.push({ id: endId, type: 'resultNode', data: { title: 'PROCEDURE END / RETURN', columns: [{ name: 'Execution Completed Successfully' }] }, position: { x: 0, y: 0 } });
-    edges.push({ id: `${prefix}edge_proc_end`, source: lastStepId, target: endId, animated: true });
-    return { nodes, edges, outputId: endId };
-  }
-
-  if (ast.ctes && ast.ctes.length > 0) {
-    ast.ctes.forEach((cte: any) => {
-      const cteTableId = `${prefix}cte_table_${cte.name}`;
-      currentCteTableNodeIds[cte.name.toLowerCase()] = cteTableId;
-    });
-  }
-
-  if (ast.ctes && ast.ctes.length > 0) {
-    ast.ctes.forEach((cte: any) => {
-      const ctePrefix = `${prefix}cte_${cte.name}_`;
-      const cteResult = astToGraph(cte.ast, ctePrefix, dialect, currentCteTableNodeIds, options);
-      nodes.push(...cteResult.nodes);
-      edges.push(...cteResult.edges);
-
-      const cteTableId = currentCteTableNodeIds[cte.name.toLowerCase()];
-      nodes.push({ id: cteTableId, type: 'tableNode', data: { label: cte.name, alias: '', title: 'Common Table Expression (CTE)', isSubquery: true }, position: { x: 0, y: 0 } });
-
-      if (cteResult.outputId) {
-        edges.push({ id: `${prefix}edge_cte_output_${cte.name}`, source: cteResult.outputId, target: cteTableId, animated: true, label: 'defines CTE', style: { strokeDasharray: '4 4' } });
-      }
-    });
-  }
-
-  const queryType = ast.type || 'select';
-
-  if (['statement', 'conditional_step', 'assignment_step', 'loop_step', 'select_step', 'update_step', 'insert_step', 'delete_step', 'merge_step', 'exception_block'].includes(queryType)) {
-    const stepId = `${prefix}${queryType}`;
-    nodes.push({ id: stepId, type: 'filterNode', data: { title: queryType.replace('_', ' ').toUpperCase(), condition: ast.text || '' }, position: { x: 0, y: 0 } });
-    return { nodes, edges, outputId: stepId };
-  }
-
-  if (queryType !== 'select') {
-    const tableIds: string[] = [];
-    const rawTables = ast.table ? (Array.isArray(ast.table) ? ast.table : [ast.table]) : [{ table: 'TARGET_TABLE' }];
-
-    let targetColumns: any[] = [];
-    if (queryType === 'insert') {
-      if (ast.columns && ast.columns.length > 0) {
-        targetColumns = ast.columns.map((col: any) => typeof col === 'string' ? col : formatExpr(col));
-      } else if (ast.values && (ast.values.type === 'select' || ast.values.type === 'union')) {
-        const selectAst = ast.values;
-        if (selectAst.columns && Array.isArray(selectAst.columns)) {
-          targetColumns = selectAst.columns.map((col: any) => {
-            if (col.as) return typeof col.as === 'string' ? col.as : formatExpr(col.as);
-            if (col.expr) return formatExpr(col.expr);
-            return formatExpr(col);
-          });
-        }
-      }
-    }
-
-    rawTables.forEach((targetTable: any, tIdx: number) => {
-      const tableId = `${prefix}table_direct_${tIdx}`;
-      const tableName = targetTable.table || 'TARGET_TABLE';
-      const tableAlias = targetTable.as || '';
-      
-      const nodeData: any = { label: tableName, alias: tableAlias, title: `Target Table (${queryType.toUpperCase()})` };
-      if (queryType === 'insert' && targetColumns.length > 0) {
-        nodeData.columns = targetColumns.map((c: any) => typeof c === 'string' ? { name: c } : c);
-      }
-
-      nodes.push({ id: tableId, type: 'tableNode', data: nodeData, position: { x: 0, y: 0 } });
-      tableIds.push(tableId);
-    });
-
-    let lastActiveId = tableIds[0] || '';
-
-    if (queryType === 'insert') {
-      const isSelectSource = ast.values && (ast.values.type === 'select' || ast.values.type === 'union' || ast.values.type === 'multi_query');
-
-      if (isSelectSource) {
-        const subResult = astToGraph(ast.values, `${prefix}insert_src_`, dialect, currentCteTableNodeIds, options);
-        nodes.push(...subResult.nodes);
-        edges.push(...subResult.edges);
-
-        if (subResult.outputId) {
-          tableIds.forEach(tableId => { edges.push({ id: `${prefix}edge_insert_select_${tableId}`, source: subResult.outputId, target: tableId, animated: true, label: 'INSERT INTO' }); });
-        }
-        lastActiveId = tableIds[0];
-      } else {
-        const sourceId = `${prefix}insert_source`;
-        let columnsStr = '';
-        if (ast.columns) columnsStr = `Columns: ${ast.columns.join(', ')}`;
-        let valuesStr = '';
-        if (ast.values && Array.isArray(ast.values)) valuesStr = `Values Count: ${ast.values.length}`;
-        
-        nodes.push({ id: sourceId, type: 'constantNode', data: { title: 'Insert Source Data', details: [columnsStr, valuesStr].filter(Boolean).join('\n') }, position: { x: 0, y: 0 } });
-        tableIds.forEach(tableId => { edges.push({ id: `${prefix}edge_insert_source_${tableId}`, source: sourceId, target: tableId, animated: true, label: 'INSERT INTO' }); });
-        lastActiveId = tableIds[0];
-      }
-      
-      if (ast.on_conflict) {
-          const conflictId = `${prefix}on_conflict`;
-          nodes.push({ id: conflictId, type: 'filterNode', data: { title: 'ON CONFLICT', condition: ast.on_conflict }, position: { x: 0, y: 0 } });
-          edges.push({ id: `${prefix}edge_on_conflict`, source: lastActiveId, target: conflictId, animated: true });
-          lastActiveId = conflictId;
-      }
-    } else if (queryType === 'update') {
-      const updateId = `${prefix}update_set`;
-      const setDetails = ast.set ? ast.set.map((item: any) => `${item.column} = ${formatExpr(item.value)}`).join(', ') : '';
-      nodes.push({ id: updateId, type: 'filterNode', data: { title: 'SET Actions', condition: setDetails, iconType: 'edit' }, position: { x: 0, y: 0 } });
-      tableIds.forEach(tableId => { edges.push({ id: `${prefix}edge_update_set_${tableId}`, source: tableId, target: updateId, animated: true }); });
-      lastActiveId = updateId;
-
-      if (ast.where) {
-        const filterId = `${prefix}filter_where`;
-        nodes.push({ id: filterId, type: 'filterNode', data: { title: 'WHERE Filter', condition: formatExpr(ast.where) }, position: { x: 0, y: 0 } });
-        edges.push({ id: `${prefix}edge_update_filter`, source: lastActiveId, target: filterId, animated: true });
-        lastActiveId = filterId;
-      }
-    } else if (queryType === 'delete') {
-      if (ast.where) {
-        const filterId = `${prefix}filter_where`;
-        nodes.push({ id: filterId, type: 'filterNode', data: { title: 'Delete Criteria (WHERE)', condition: formatExpr(ast.where) }, position: { x: 0, y: 0 } });
-        tableIds.forEach(tableId => { edges.push({ id: `${prefix}edge_delete_filter_${tableId}`, source: tableId, target: filterId, animated: true }); });
-        lastActiveId = filterId;
-      }
-    } else if (queryType === 'merge') {
-      const mergeId = `${prefix}merge_action`;
-      nodes.push({ id: mergeId, type: 'filterNode', data: { title: 'MERGE ACTION', condition: ast.text || 'Merge Clauses' }, position: { x: 0, y: 0 } });
-      tableIds.forEach(tableId => { edges.push({ id: `${prefix}edge_merge_set_${tableId}`, source: tableId, target: mergeId, animated: true }); });
-      lastActiveId = mergeId;
-    }
-
-    const resultId = `${prefix}result`;
-    let resCols = [{ name: `Operation: ${queryType.toUpperCase()}` }, { name: 'Affected / Targeted Records' }];
-    if (queryType === 'insert' && ast.columns && Array.isArray(ast.columns)) {
-      resCols = [ { name: `Operation: INSERT` }, { name: 'Target Columns:' }, ...ast.columns.map((col: any) => ({ name: typeof col === 'string' ? col : formatExpr(col) })) ];
-    } else if (queryType === 'truncate') {
-      resCols = [ { name: `Operation: TRUNCATE` } ];
-    } else if (queryType === 'refresh_view') {
-      resCols = [ { name: `Operation: REFRESH MAT VIEW` } ];
-    } else if (queryType === 'update' || queryType === 'delete' || queryType === 'merge') {
-      resCols = [ { name: `Operation: ${queryType.toUpperCase()}` } ];
-    }
-
-    nodes.push({ id: resultId, type: 'resultNode', data: { title: 'Execution Completion', columns: resCols }, position: { x: 0, y: 0 } });
-
-    if (queryType === 'insert') {
-      edges.push({ id: `${prefix}edge_final_result_ins`, source: lastActiveId, target: resultId, animated: true });
-    } else if (queryType === 'truncate' || queryType === 'refresh_view') {
-      tableIds.forEach((tableId, tIdx) => { edges.push({ id: `${prefix}edge_final_result_${tIdx}`, source: tableId, target: resultId, animated: true }); });
-    } else {
-      edges.push({ id: `${prefix}edge_final_result`, source: lastActiveId, target: resultId, animated: true });
-    }
-
-    return { nodes, edges, outputId: resultId };
-  }
-
-  let lastActiveId = '';
-
-  if ((!ast.from || ast.from.length === 0) && (!ast.columns || ast.columns.length === 0 || ast.columns === '*')) {
-    return { nodes, edges, outputId: '' };
-  }
-
-  if (ast.from && Array.isArray(ast.from) && ast.from.length > 0) {
-    for (let i = 0; i < ast.from.length; i++) {
-      const fromItem = ast.from[i];
-      
-      if (!fromItem.expr && fromItem.table) {
-        const trimmedTable = fromItem.table.trim();
-        const hasSelect = /\bSELECT\b/i.test(trimmedTable);
-        if (hasSelect) {
-          const { sql: subSql, alias: extractedAlias } = extractCleanSubquerySql(trimmedTable);
-          try {
-            const parsed = parseSingleSqlToAst(subSql, dialect);
-            if (parsed && parsed.ast) {
-              fromItem.expr = { ast: parsed.ast };
-              if (extractedAlias && !fromItem.as) {
-                fromItem.as = extractedAlias;
-              }
-              delete fromItem.table;
-            }
-          } catch (e) {}
-        }
-      }
-
-      let currentTableOutputId = '';
-
-      if (fromItem.expr && fromItem.expr.ast) {
-        const subqueryAlias = fromItem.as || `subquery_${i}`;
-        const subqueryPrefix = `${prefix}sub_${subqueryAlias}_`;
-
-        const subResult = astToGraph(fromItem.expr.ast, subqueryPrefix, dialect, currentCteTableNodeIds, options);
-        nodes.push(...subResult.nodes);
-        edges.push(...subResult.edges);
-
-        const subquerySrcTables = extractTablesFromAst(fromItem.expr.ast);
-
-        const wrapperNodeId = `${prefix}subquery_wrapper_${i}`;
-        nodes.push({ id: wrapperNodeId, type: 'tableNode', data: { label: `Subquery: ${subqueryAlias}`, alias: subqueryAlias, title: 'Derived Table View', isSubquery: true, subqueryTables: subquerySrcTables }, position: { x: 0, y: 0 } });
-
-        if (subResult.outputId) edges.push({ id: `${prefix}edge_subquery_wrap_${i}`, source: subResult.outputId, target: wrapperNodeId, animated: true, style: { strokeDasharray: '4 4' } });
-        currentTableOutputId = wrapperNodeId;
-      } else {
-        let tableName = fromItem.table;
-        let isFunc = fromItem.isTableFunction;
-
-        // Если функция была спрятана парсером в поле expr
-        if (!tableName && fromItem.expr) {
-          tableName = formatExpr(fromItem.expr);
-          isFunc = true;
-        }
-
-        tableName = tableName || 'UNKNOWN_TABLE';
-
-        // Срезаем внешнюю обертку TABLE() чтобы на графе был красивый чистый код функции
-        const upperName = tableName.toUpperCase();
-        if (upperName.startsWith('TABLE(') || upperName.startsWith('TABLE (')) {
-          const firstParen = tableName.indexOf('(');
-          if (firstParen !== -1 && tableName.endsWith(')')) {
-            tableName = tableName.substring(firstParen + 1, tableName.length - 1).trim();
-            isFunc = true;
-          }
-        }
-
-        const tableAlias = fromItem.as || '';
-        const lowerName = tableName.toLowerCase();
-        const cteTableId = currentCteTableNodeIds[lowerName];
-
-        if (cteTableId) {
-          currentTableOutputId = cteTableId;
-        } else {
-          const tableId = `${prefix}table_${i}`;
-          nodes.push({ 
-            id: tableId, 
-            type: 'tableNode', 
-            data: { 
-              label: tableName, 
-              alias: tableAlias, 
-              title: isFunc ? 'Table Function' : 'Base Table' 
-            }, 
-            position: { x: 0, y: 0 } 
-          });
-          currentTableOutputId = tableId;
-        }
-      }
-
-      if (i === 0) {
-        lastActiveId = currentTableOutputId;
-      } else {
-        const joinId = `${prefix}join_${i}`;
-        const joinType = fromItem.join || 'INNER JOIN';
-        const joinOn = fromItem.on ? formatExpr(fromItem.on) : 'NATURAL JOIN';
-
-        nodes.push({ id: joinId, type: 'joinNode', data: { joinType: joinType, condition: joinOn }, position: { x: 0, y: 0 } });
-        edges.push({ id: `${prefix}edge_join_left_${i}`, source: lastActiveId, target: joinId, animated: true });
-        edges.push({ id: `${prefix}edge_join_right_${i}`, source: currentTableOutputId, target: joinId, animated: true });
-        lastActiveId = joinId;
-      }
-    }
-  } else {
-    const constantId = `${prefix}constant_expr`;
-    nodes.push({ id: constantId, type: 'constantNode', data: { title: 'Constant Source', details: 'Evaluated expressions' }, position: { x: 0, y: 0 } });
-    lastActiveId = constantId;
-  }
+): { nodes: GraphNode[]; edges: GraphEdge[]; outputId: string } {
   
-  if (ast.prewhere) {
-      const prewhereId = `${prefix}filter_prewhere`;
-      const conditionText = formatExpr(ast.prewhere);
-      nodes.push({ id: prewhereId, type: 'filterNode', data: { title: 'PREWHERE Filter', condition: conditionText }, position: { x: 0, y: 0 } });
-      edges.push({ id: `${prefix}edge_prewhere`, source: lastActiveId, target: prewhereId, animated: true });
-      lastActiveId = prewhereId;
+  const ctx: GraphContext = { nodes: [], edges: [], cteOutputIds: { ...cteTableNodeIds }, options };
+
+  if (!ast) return { nodes: ctx.nodes, edges: ctx.edges, outputId: '' };
+
+  // Entry logic: Collapse Top-Level Queries Only
+  if (ast.type === 'multi_query') {
+    let lastId = '';
+    ast.queries.forEach((qAst: any, qIdx: number) => {
+      const qId = `${prefix}q_${qIdx}`;
+      if (!options.expandedQueries?.has(qId)) {
+        let snippet = qAst.type || 'STATEMENT';
+        if (qAst.type === 'select') snippet = 'SELECT ...';
+        if (qAst.type === 'update') snippet = 'UPDATE ...';
+        
+        ctx.nodes.push({
+          id: qId, type: 'queryGroupNode',
+          data: { title: `Query ${qIdx + 1}`, queryText: snippet, queryId: qId, onToggle: options.onToggleExpand },
+          position: { x: 0, y: 0 }
+        });
+        if (lastId) addEdge(ctx, lastId, qId, 'Next', { strokeDasharray: '5 5' });
+        lastId = qId;
+      } else {
+        const outId = buildDataPipeline(qAst, `${prefix}q${qIdx}_`, dialect, ctx);
+        
+        const collapseId = `${qId}_collapse`;
+        ctx.nodes.push({
+          id: collapseId, type: 'collapseNode',
+          data: { title: `Hide Query ${qIdx + 1}`, queryId: qId, onToggle: options.onToggleExpand },
+          position: { x: 0, y: 0 }
+        });
+        
+        if (lastId) addEdge(ctx, lastId, collapseId, 'Next', { strokeDasharray: '5 5' });
+        // Link collapse button to the start of this pipeline block visually
+        const firstNode = ctx.nodes.find(n => n.id.startsWith(`${prefix}q${qIdx}_`));
+        if (firstNode) addEdge(ctx, collapseId, firstNode.id);
+        
+        lastId = outId || collapseId;
+      }
+    });
+    return { nodes: ctx.nodes, edges: ctx.edges, outputId: lastId };
   }
 
-  if (ast.where) {
-    const filterId = `${prefix}filter_where`;
-    const conditionText = formatExpr(ast.where);
-    nodes.push({ id: filterId, type: 'filterNode', data: { title: 'WHERE Filter', condition: conditionText }, position: { x: 0, y: 0 } });
-    edges.push({ id: `${prefix}edge_where`, source: lastActiveId, target: filterId, animated: true });
-    lastActiveId = filterId;
-
-    const nestedQueries = extractSubqueriesFromString(conditionText);
-    nestedQueries.forEach((item, subIdx) => {
-      try {
-        const nestedPrefix = `${prefix}nested_where_${subIdx}_`;
-        const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
-        const subResult = astToGraph(parsedSub, nestedPrefix, dialect, currentCteTableNodeIds, options);
-        nodes.push(...subResult.nodes);
-        edges.push(...subResult.edges);
-
-        if (subResult.outputId) {
-          edges.push({ id: `${prefix}edge_nested_where_link_${subIdx}`, source: subResult.outputId, target: filterId, animated: true, label: 'subquery constraint', style: { strokeDasharray: '4 4' } });
+  // Procedures Container Fallback
+  if (ast.type === 'procedure') {
+     const procId = `${prefix}proc`;
+     ctx.nodes.push({ id: procId, type: 'tableNode', data: { label: ast.name, title: 'PROCEDURE' }, position: { x: 0, y: 0 }});
+     let lastStepId = procId;
+     
+     ast.steps.forEach((step: any, sIdx: number) => {
+        if (step.parsedQuery) {
+           const stepOut = buildDataPipeline(step.parsedQuery, `${prefix}pstep_${sIdx}_`, dialect, ctx);
+           addEdge(ctx, lastStepId, stepOut, 'executes');
+           lastStepId = stepOut;
+        } else {
+           const sId = `${prefix}pstep_${sIdx}`;
+           ctx.nodes.push({ id: sId, type: 'filterNode', data: { title: step.title, condition: step.text }, position: { x: 0, y: 0 }});
+           addEdge(ctx, lastStepId, sId, 'executes');
+           lastStepId = sId;
         }
-      } catch (e) {}
-    });
+     });
+     return { nodes: ctx.nodes, edges: ctx.edges, outputId: lastStepId };
   }
 
-  if (ast.start_with || ast.connect_by) {
-      const hierarchyId = `${prefix}hierarchy_connect`;
-      let details = '';
-      if (ast.start_with) details += `START WITH: ${formatExpr(ast.start_with)}\n`;
-      if (ast.connect_by) details += `CONNECT BY: ${formatExpr(ast.connect_by)}`;
-      nodes.push({ id: hierarchyId, type: 'filterNode', data: { title: 'Hierarchical Query', condition: details }, position: { x: 0, y: 0 } });
-      edges.push({ id: `${prefix}edge_hierarchy`, source: lastActiveId, target: hierarchyId, animated: true });
-      lastActiveId = hierarchyId;
-  }
-
-  if (ast.groupby && Array.isArray(ast.groupby) && ast.groupby.length > 0) {
-    const groupbyId = `${prefix}groupby`;
-    const groupedColumns = ast.groupby.map((col: any) => formatExpr(col)).join(', ');
-    nodes.push({ id: groupbyId, type: 'groupByNode', data: { columns: groupedColumns }, position: { x: 0, y: 0 } });
-    edges.push({ id: `${prefix}edge_groupby`, source: lastActiveId, target: groupbyId, animated: true });
-    lastActiveId = groupbyId;
-  }
-
-  if (ast.having) {
-    const havingId = `${prefix}having`;
-    const conditionText = formatExpr(ast.having);
-    nodes.push({ id: havingId, type: 'havingNode', data: { condition: conditionText }, position: { x: 0, y: 0 } });
-    edges.push({ id: `${prefix}edge_having`, source: lastActiveId, target: havingId, animated: true });
-    lastActiveId = havingId;
-
-    const nestedQueries = extractSubqueriesFromString(conditionText);
-    nestedQueries.forEach((item, subIdx) => {
-      try {
-        const nestedPrefix = `${prefix}nested_having_${subIdx}_`;
-        const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
-        const subResult = astToGraph(parsedSub, nestedPrefix, dialect, currentCteTableNodeIds, options);
-        nodes.push(...subResult.nodes);
-        edges.push(...subResult.edges);
-
-        if (subResult.outputId) {
-          edges.push({ id: `${prefix}edge_nested_having_link_${subIdx}`, source: subResult.outputId, target: havingId, animated: true, label: 'subquery constraint', style: { strokeDasharray: '4 4' } });
-        }
-      } catch (e) {}
-    });
-  }
-
-  if (ast.orderby && Array.isArray(ast.orderby) && ast.orderby.length > 0 && options.showSort !== false) {
-    const orderbyId = `${prefix}orderby`;
-    const sortingDetails = ast.orderby.map((item: any) => `${formatExpr(item.expr)} ${item.type || 'ASC'}`).join(', ');
-    nodes.push({ id: orderbyId, type: 'sortNode', data: { details: sortingDetails }, position: { x: 0, y: 0 } });
-    edges.push({ id: `${prefix}edge_orderby`, source: lastActiveId, target: orderbyId, animated: true });
-    lastActiveId = orderbyId;
-  }
-
-  if (ast.limit && ast.limit.value && Array.isArray(ast.limit.value) && options.showLimit !== false) {
-    const limitId = `${prefix}limit`;
-    const limitVal = ast.limit.value[0]?.value ?? '0';
-    const offsetVal = ast.limit.value[1]?.value ?? '0';
-    const limitText = `Limit: ${limitVal}` + (offsetVal !== '0' && offsetVal !== undefined ? `, Offset: ${offsetVal}` : '');
-    nodes.push({ id: limitId, type: 'limitNode', data: { details: limitText }, position: { x: 0, y: 0 } });
-    edges.push({ id: `${prefix}edge_limit`, source: lastActiveId, target: limitId, animated: true });
-    lastActiveId = limitId;
-  }
-
-  const resultId = `${prefix}result`;
-  const resultCols = ast.columns === '*' ? [{ name: '*' }] : (
-    Array.isArray(ast.columns) ? ast.columns.map((col: any) => {
-      return { name: formatExpr(col.expr), alias: col.as };
-    }) : [{ name: '*' }]
-  );
-
-  nodes.push({ id: resultId, type: 'resultNode', data: { title: 'SELECT Output Columns', columns: resultCols }, position: { x: 0, y: 0 } });
-  if (lastActiveId) edges.push({ id: `${prefix}edge_result`, source: lastActiveId, target: resultId, animated: true });
-
-  if (Array.isArray(ast.columns)) {
-    ast.columns.forEach((col: any, colIdx: number) => {
-      const colExprStr = formatExpr(col.expr);
-      const nestedQueries = extractSubqueriesFromString(colExprStr);
-      nestedQueries.forEach((item, subIdx) => {
-        try {
-          const nestedPrefix = `${prefix}nested_select_${colIdx}_${subIdx}_`;
-          const parsedSub = parseSingleSqlToAst(item.subquerySql, dialect).ast;
-          const subResult = astToGraph(parsedSub, nestedPrefix, dialect, currentCteTableNodeIds, options);
-          nodes.push(...subResult.nodes);
-          edges.push(...subResult.edges);
-
-          if (subResult.outputId) {
-            edges.push({ id: `${prefix}edge_nested_select_link_${colIdx}_${subIdx}`, source: subResult.outputId, target: resultId, animated: true, label: 'scalar value', style: { strokeDasharray: '4 4' } });
-          }
-        } catch (e) {}
-      });
-    });
-  }
-
-  return { nodes, edges, outputId: resultId };
+  // Single Standard Query
+  const finalId = buildDataPipeline(ast, prefix, dialect, ctx);
+  return { nodes: ctx.nodes, edges: ctx.edges, outputId: finalId };
 }
 
 export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], direction = 'LR') {
