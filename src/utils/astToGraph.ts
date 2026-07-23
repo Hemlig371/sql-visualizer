@@ -799,8 +799,12 @@ export function transformNodeSqlParserUnion(ast: any): any {
   
   if (ast.from && Array.isArray(ast.from)) {
     ast.from = ast.from.map((item: any) => {
-      if (item.expr && item.expr.ast) {
-        item.expr.ast = transformNodeSqlParserUnion(item.expr.ast);
+      if (item.expr) {
+        if (item.expr.ast) {
+          item.expr.ast = transformNodeSqlParserUnion(item.expr.ast);
+        } else if (item.expr.type === 'select' || item.expr.type === 'union') {
+          item.expr = transformNodeSqlParserUnion(item.expr);
+        }
       }
       return item;
     });
@@ -1382,19 +1386,34 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
 
   const queryType = ast.type || 'select';
 
-  // 1. CTEs (Common Table Expressions)
-  if (ast.ctes && ast.ctes.length > 0) {
-    ast.ctes.forEach((cte: any) => {
-      const ctePrefix = `${prefix}cte_${cte.name}_`;
-      const cteOutputId = buildDataPipeline(cte.ast, ctePrefix, dialect, ctx);
+  // 1. CTEs (Common Table Expressions) - Поддержка обоих парсеров (ast.with и ast.ctes)
+  const ctesList = ast.ctes || ast.with || [];
+  if (ctesList.length > 0) {
+    ctesList.forEach((cte: any) => {
+      // Извлекаем имя, даже если парсер вернул объект { value: 'название' }
+      let cteName = cte.name;
+      if (cteName && typeof cteName === 'object' && cteName.value) {
+        cteName = cteName.value;
+      }
+      cteName = String(cteName || `CTE_${Math.random().toString(36).substring(2, 7)}`).replace(/^["'`]|["'`]$/g, '').trim();
       
-      const cteWrapId = `${prefix}cte_wrap_${cte.name}`;
-      ctx.nodes.push({
-        id: cteWrapId, type: 'tableNode',
-        data: { label: cte.name, title: 'CTE (With Statement)', isSubquery: true }, position: { x: 0, y: 0 }
-      });
-      addEdge(ctx, cteOutputId, cteWrapId, 'defines');
-      ctx.cteOutputIds[cte.name.toLowerCase()] = cteWrapId;
+      const cteAst = cte.ast || cte.stmt; // ast (эвристика) или stmt (node-sql-parser)
+      
+      if (cteAst) {
+        const ctePrefix = `${prefix}cte_${cteName}_`;
+        const cteOutputId = buildDataPipeline(cteAst, ctePrefix, dialect, ctx);
+        
+        const cteWrapId = `${prefix}cte_wrap_${cteName}`;
+        ctx.nodes.push({
+          id: cteWrapId, type: 'tableNode',
+          data: { label: cteName, title: 'CTE (With Statement)', isSubquery: true }, position: { x: 0, y: 0 }
+        });
+        
+        addEdge(ctx, cteOutputId, cteWrapId, 'defines CTE', { strokeDasharray: '4 4', stroke: '#64748b' });
+        
+        // Регистрируем в нижнем регистре для точного связывания во FROM
+        ctx.cteOutputIds[cteName.toLowerCase()] = cteWrapId;
+      }
     });
   }
 
@@ -1444,7 +1463,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
             const updateActionId = `${prefix}update_action`;
             ctx.nodes.push({ id: updateActionId, type: 'filterNode', data: { title: 'SET', iconType: 'edit' }, position: { x: 0, y: 0 }});
             addEdge(ctx, currentInputId, updateActionId);
-            targetIds.forEach(tId => addEdge(ctx, updateActionId, tId, 'updates')); // loop back
+            targetIds.forEach(tId => addEdge(ctx, updateActionId, tId, 'updates'));
             currentInputId = updateActionId;
           }
        }
@@ -1456,7 +1475,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     return resId;
   }
 
-  // 4. MAIN SELECT PIPELINE (Data Lineage Flow)
+  // 4. MAIN SELECT PIPELINE
   let currentOutputId = '';
 
   // 4.1 FROM & JOINS
@@ -1465,17 +1484,34 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     
     ast.from.forEach((fromItem: any, idx: number) => {
       let srcId = '';
-      if (fromItem.expr && fromItem.expr.ast) {
-        srcId = buildDataPipeline(fromItem.expr.ast, `${prefix}from_${idx}_`, dialect, ctx);
+      
+      // Ищем подзапрос в обоих форматах
+      let subqueryAst = null;
+      if (fromItem.expr) {
+        if (fromItem.expr.ast) {
+          subqueryAst = fromItem.expr.ast;
+        } else if (fromItem.expr.type === 'select' || fromItem.expr.type === 'union') {
+          subqueryAst = fromItem.expr;
+        }
+      }
+      
+      if (subqueryAst) {
+        // Отрисовываем ветку подзапроса
+        srcId = buildDataPipeline(subqueryAst, `${prefix}from_${idx}_`, dialect, ctx);
         const wrapperId = `${prefix}from_wrap_${idx}`;
         ctx.nodes.push({ id: wrapperId, type: 'tableNode', data: { label: fromItem.as || 'Subquery', isSubquery: true }, position: { x: 0, y: 0 }});
         addEdge(ctx, srcId, wrapperId, 'derived table', { strokeDasharray: '4 4' });
         srcId = wrapperId;
       } else {
-        const tName = fromItem.table || 'UNKNOWN';
+        // Ищем базовую таблицу или CTE
+        let tName = fromItem.table;
+        if (tName && typeof tName === 'object' && tName.value) tName = tName.value;
+        tName = String(tName || 'UNKNOWN').replace(/^["'`]|["'`]$/g, '').trim();
+        
         const cteId = ctx.cteOutputIds[tName.toLowerCase()];
+        
         if (cteId) {
-          srcId = cteId; // Connect directly to CTE
+          srcId = cteId; // СВЯЗЫВАЕМ НАПРЯМУЮ С УЗЛОМ CTE
         } else {
           srcId = `${prefix}base_table_${idx}`;
           ctx.nodes.push({ id: srcId, type: 'tableNode', data: { label: tName, alias: fromItem.as }, position: { x: 0, y: 0 }});
