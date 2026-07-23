@@ -888,35 +888,58 @@ function parseHeuristicFromAndJoins(fromBlock: string, dialect: string): any[] {
   const fromList: any[] = [];
   if (!fromBlock) return fromList;
 
-  const joinRegex = /\b((?:GLOBAL\s+)?(?:LEFT\s+ARRAY\s+JOIN|ARRAY\s+JOIN|LEFT\s+OUTER\s+JOIN|RIGHT\s+OUTER\s+JOIN|FULL\s+OUTER\s+JOIN|INNER\s+JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN|CROSS\s+JOIN|LATERAL\s+JOIN|JOIN))\b/i;
-  const parts = fromBlock.split(joinRegex);
+  // 1. Сначала разбиваем по запятым верхнего уровня
+  const commaParts = splitByTopLevelCommas(fromBlock);
   
-  const firstPart = parts[0].trim();
-  const baseTable = parseTableOrSubquery(firstPart, dialect);
-  if (baseTable) {
-    fromList.push(baseTable);
-  }
-
-  for (let i = 1; i < parts.length; i += 2) {
-    const joinKeyword = parts[i].trim().toUpperCase();
-    const tableAndCondition = parts[i + 1]?.trim() || '';
-
-    const onIndex = tableAndCondition.search(/\bON\b/i);
-    let tablePart = tableAndCondition;
-    let onCondition = '';
-
-    if (onIndex !== -1) {
-      tablePart = tableAndCondition.substring(0, onIndex).trim();
-      onCondition = tableAndCondition.substring(onIndex + 2).trim();
+  commaParts.forEach((commaPart, commaIdx) => {
+    // 2. Затем разбиваем по ключевым словам JOIN
+    const joinRegex = /\b((?:GLOBAL\s+)?(?:LEFT\s+ARRAY\s+JOIN|ARRAY\s+JOIN|LEFT\s+OUTER\s+JOIN|RIGHT\s+OUTER\s+JOIN|FULL\s+OUTER\s+JOIN|INNER\s+JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN|CROSS\s+JOIN|LATERAL\s+JOIN|JOIN))\b/i;
+    const parts = commaPart.split(joinRegex);
+    
+    const firstPart = parts[0].trim();
+    const baseTable = parseTableOrSubquery(firstPart, dialect);
+    
+    if (baseTable) {
+      // Если это не первая часть после запятой, помечаем её как COMMA JOIN
+      if (commaIdx > 0) {
+        baseTable.join = 'COMMA JOIN';
+      }
+      fromList.push(baseTable);
     }
 
-    const joinTable = parseTableOrSubquery(tablePart, dialect);
-    if (joinTable) {
-      joinTable.join = joinKeyword;
-      joinTable.on = onCondition ? { type: 'column_ref', column: onCondition } : null;
-      fromList.push(joinTable);
+    for (let i = 1; i < parts.length; i += 2) {
+      const joinKeyword = parts[i].trim().toUpperCase();
+      const tableAndCondition = parts[i + 1]?.trim() || '';
+
+      const onIndex = tableAndCondition.search(/\bON\b/i);
+      const usingIndex = tableAndCondition.search(/\bUSING\b/i);
+
+      let tablePart = tableAndCondition;
+      let onCondition = '';
+
+      let splitIndex = -1;
+      let splitOffset = 0;
+      if (onIndex !== -1 && (usingIndex === -1 || onIndex < usingIndex)) {
+        splitIndex = onIndex;
+        splitOffset = 2;
+      } else if (usingIndex !== -1) {
+        splitIndex = usingIndex;
+        splitOffset = 5;
+      }
+
+      if (splitIndex !== -1) {
+        tablePart = tableAndCondition.substring(0, splitIndex).trim();
+        onCondition = tableAndCondition.substring(splitIndex + splitOffset).trim();
+      }
+
+      const joinTable = parseTableOrSubquery(tablePart, dialect);
+      if (joinTable) {
+        joinTable.join = joinKeyword;
+        joinTable.on = onCondition ? { type: 'column_ref', column: onCondition } : null;
+        fromList.push(joinTable);
+      }
     }
-  }
+  });
 
   return fromList;
 }
@@ -1504,7 +1527,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
         const cteId = ctx.cteOutputIds[tName.toLowerCase()];
         
         if (cteId) {
-          srcId = cteId; // Прямая связь с CTE
+          srcId = cteId; // Идеальная связка с CTE
         } else {
           srcId = `${prefix}base_table_${idx}`;
           ctx.nodes.push({ id: srcId, type: 'tableNode', data: { label: tName, alias: fromItem.as }, position: { x: 0, y: 0 }});
@@ -1516,7 +1539,27 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
         currentOutputId = srcId;
       } else {
         const joinId = `${prefix}join_${idx}`;
-        ctx.nodes.push({ id: joinId, type: 'joinNode', data: { joinType: fromItem.join || 'JOIN', condition: fromItem.on ? formatExpr(fromItem.on) : '' }, position: { x: 0, y: 0 }});
+        
+        // --- Явное определение типа JOIN ---
+        let joinTypeStr = fromItem.join ? String(fromItem.join).toUpperCase() : 'COMMA JOIN';
+        
+        // Корректировка для node-sql-parser, который иногда помечает запятые как INNER JOIN без условия
+        if (joinTypeStr === 'INNER JOIN' && !fromItem.on) {
+          joinTypeStr = 'COMMA JOIN';
+        }
+        
+        const conditionStr = fromItem.on ? formatExpr(fromItem.on) : 'NO CONDITION (CROSS)';
+        
+        ctx.nodes.push({ 
+          id: joinId, 
+          type: 'joinNode', 
+          data: { 
+            joinType: joinTypeStr, 
+            condition: conditionStr 
+          }, 
+          position: { x: 0, y: 0 }
+        });
+        
         addEdge(ctx, currentOutputId, joinId, 'left');
         addEdge(ctx, srcId, joinId, 'right');
         currentOutputId = joinId;
