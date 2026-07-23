@@ -215,11 +215,34 @@ export function formatExpr(expr: any): string {
       const colVal = typeof expr.column === 'object' ? formatExpr(expr.column) : expr.column;
       const tblVal = expr.table ? (typeof expr.table === 'object' ? formatExpr(expr.table) : expr.table) : '';
       return prefix + (tblVal ? `${tblVal}.${colVal}` : colVal);
+    case 'unary_expr':
+      const uOp = expr.operator || '';
+      const uExpr = formatExpr(expr.expr);
+      return `${uOp} ${uExpr}`.trim();
+      
     case 'binary_expr':
       const left = formatExpr(expr.left);
-      const right = formatExpr(expr.right);
       const op = typeof expr.operator === 'object' ? formatExpr(expr.operator) : (expr.operator || '');
-      return `(${left} ${op} ${right})`;
+      
+      let right = '';
+      const upperOp = op.toUpperCase();
+      
+      if (upperOp === 'BETWEEN' || upperOp === 'NOT BETWEEN') {
+         if (Array.isArray(expr.right)) {
+             right = expr.right.map(formatExpr).join(' AND ');
+         } else {
+             right = formatExpr(expr.right);
+         }
+      } else if (upperOp === 'IN' || upperOp === 'NOT IN') {
+         const rightFormatted = formatExpr(expr.right);
+         right = `(${rightFormatted})`; 
+      } else if (upperOp === 'IS NULL' || upperOp === 'IS NOT NULL') {
+         return `${left} ${op}`;
+      } else {
+         right = formatExpr(expr.right);
+      }
+      
+      return `${left} ${op} ${right}`;
     case 'number':
     case 'string':
     case 'single_quote_string':
@@ -1520,6 +1543,21 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     return resId;
   }
 
+  // 3.5 Fallback for Raw Statements & Unparsed Blocks
+  if (['statement', 'conditional_step', 'assignment_step', 'loop_step', 'exception_block'].includes(queryType)) {
+    const stmtId = `${prefix}${queryType}`;
+    ctx.nodes.push({ 
+      id: stmtId, 
+      type: 'filterNode', 
+      data: { 
+        title: queryType.toUpperCase().replace('_', ' '), 
+        condition: ast.text || 'Raw Query Block' 
+      }, 
+      position: { x: 0, y: 0 }
+    });
+    return stmtId;
+  }
+  
   // 4. MAIN SELECT PIPELINE
   let currentOutputId = '';
 
