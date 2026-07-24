@@ -800,10 +800,6 @@ export function SqlEditor({
                 theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-200' : 'bg-white border-slate-300 text-slate-800 shadow-slate-400/30'
               }`}
             >
-              <div className="text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 text-slate-400 border-b mb-1 flex items-center justify-between select-none">
-                <span>Автодополнение SQL</span>
-                <span className="text-[8px] opacity-70">Tab / Enter</span>
-              </div>
               <div className="space-y-0.5 max-h-40 overflow-y-auto">
                 {suggestions.map((kw, idx) => {
                   const customMatch = customTemplates.find(t => t.keyword === kw);

@@ -61,7 +61,7 @@ import { SqlEditor, highlightSqlHtml } from './components/SqlEditor';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SettingsModal, getSavedHotkeys, getSavedFormatterSettings, FormatterSettings, getSavedUiVisibilitySettings, UiVisibilitySettings } from './components/SettingsModal';
 import { VersionHistoryModal } from './components/VersionHistoryModal';
-import { saveVersion } from './utils/versionHistory';
+import { saveVersion, getVersions } from './utils/versionHistory';
 import { format as formatSql } from 'sql-formatter';
 
 export interface EditorTab {
@@ -104,7 +104,7 @@ export default function App() {
   const [showSortNodes, setShowSortNodes] = useState<boolean>(false);
   const [showLimitNodes, setShowLimitNodes] = useState<boolean>(false);
   const [isWrapSql, setIsWrapSql] = useState<boolean>(() => savedSession?.isWrapSql ?? false);
-  const [isMaximizedSql, setIsMaximizedSql] = useState<boolean>(true);
+  const [isMaximizedSql, setIsMaximizedSql] = useState<boolean>(false);
   const [showSnippetsModal, setShowSnippetsModal] = useState<boolean>(false);
   const [showPresetsDropdown, setShowPresetsDropdown] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
@@ -118,7 +118,6 @@ export default function App() {
     formatterSettingsRef.current = formatterSettings;
   }, [formatterSettings]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const lastSavedSqlRef = useRef<string>('');
 
   // Tabs state for fullscreen editor
   const [tabs, setTabs] = useState<EditorTab[]>(() => {
@@ -253,19 +252,27 @@ export default function App() {
     sqlRef.current = sql;
   }, [sql]);
 
-  // Debounced auto-save version into IndexedDB (500ms after user stops typing)
+  // Auto-save version into IndexedDB every 5 minutes if current tab SQL differs from the existing latest snapshot
   useEffect(() => {
-    if (!sql.trim() || sql === lastSavedSqlRef.current) return;
-    const timer = setTimeout(() => {
-      saveVersion(sql, 'Автосохранение', true)
-        .then(() => {
-          lastSavedSqlRef.current = sql;
-        })
-        .catch((err) => console.warn('Auto-save error:', err));
-    }, 500);
+    const INTERVAL_5_MIN = 5 * 60 * 1000;
+    const intervalId = setInterval(async () => {
+      const currentSql = sqlRef.current;
+      if (!currentSql.trim()) return;
 
-    return () => clearTimeout(timer);
-  }, [sql]);
+      try {
+        const existingVersions = await getVersions();
+        const latestSql = existingVersions.length > 0 ? existingVersions[0].sql : null;
+
+        if (latestSql !== currentSql) {
+          await saveVersion(currentSql, 'Автосохранение', true);
+        }
+      } catch (err) {
+        console.warn('Auto-save interval error:', err);
+      }
+    }, INTERVAL_5_MIN);
+
+    return () => clearInterval(intervalId);
+  }, []);
 
   const handleOpenFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -274,6 +281,17 @@ export default function App() {
       reader.onload = (event) => {
         const content = event.target?.result as string;
         if (typeof content === 'string') {
+          const newId = Date.now().toString();
+          const newTab: EditorTab = {
+            id: newId,
+            title: file.name,
+            sql: content
+          };
+          setTabs(prev => {
+            const updated = prev.map(t => t.id === activeTabId ? { ...t, sql } : t);
+            return [...updated, newTab];
+          });
+          setActiveTabId(newId);
           setSql(content);
           handleVisualize(content, dialect, direction);
         }
@@ -283,13 +301,44 @@ export default function App() {
     e.target.value = '';
   };
 
-  const handleSaveSqlFile = () => {
+  const handleSaveSqlFile = async () => {
     if (!sql.trim()) return;
+
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    let suggestedName = activeTab ? activeTab.title : 'query.sql';
+    if (suggestedName && !suggestedName.toLowerCase().endsWith('.sql')) {
+      suggestedName += '.sql';
+    }
+
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: suggestedName,
+          types: [{
+            description: 'SQL Files',
+            accept: {
+              'text/plain': ['.sql'],
+            },
+          }],
+        });
+
+        const writable = await handle.createWritable();
+        await writable.write(sql);
+        await writable.close();
+        return;
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          return;
+        }
+        console.warn('File System Access API failed, falling back to anchor download:', err);
+      }
+    }
+
     const blob = new Blob([sql], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'query.sql';
+    link.download = suggestedName;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1402,7 +1451,6 @@ export default function App() {
               <>
                 <div className="flex items-center gap-1.5 font-medium">
                   <Layout className="w-3.5 h-3.5 text-blue-500" />
-                  <span className={theme === 'dark' ? 'text-slate-100' : 'text-slate-800 font-semibold'}>Layout:</span>
                 </div>
                 <div className={`flex p-0.5 rounded-md border ${
                   theme === 'dark' ? 'bg-slate-850 border-slate-600' : 'bg-slate-100 border-slate-300 shadow-sm'
@@ -1475,7 +1523,7 @@ export default function App() {
                     title="Подсветка взаимосвязей (Data Lineage) выделенного узла"
                   >
                     <Workflow className="w-3 h-3" />
-                    <span>Lineage Focus</span>
+                    <span>Focus</span>
                   </button>
                   )}
                 </div>

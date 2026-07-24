@@ -11,8 +11,8 @@ export interface SqlVersionItem {
 
 const DB_NAME = 'SQL_VersionHistory_DB';
 const STORE_NAME = 'versions';
-const RETENTION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days depth (72 hours)
-const MAX_VERSIONS = 300; // Maximum number of snapshots in history
+const MAX_AUTO_VERSIONS = 300;
+const MAX_MANUAL_VERSIONS = 100;
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -136,49 +136,57 @@ export async function getVersionById(id: string): Promise<SqlVersionItem | null>
 }
 
 async function cleanupOldVersions(db: IDBDatabase): Promise<void> {
-  const cutoff = Date.now() - RETENTION_MS;
-
-  // 1. Delete items older than RETENTION_MS (72 hours)
-  await new Promise<void>((resolve) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
+  // Get all items to check their categories and timestamps
+  const allItems = await new Promise<SqlVersionItem[]>((resolve) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
     const store = tx.objectStore(STORE_NAME);
-    const index = store.index('timestamp');
-    const range = IDBKeyRange.upperBound(cutoff);
-
-    const req = index.openCursor(range);
-    req.onsuccess = (e: any) => {
-      const cursor = e.target.result;
-      if (cursor) {
-        store.delete(cursor.primaryKey);
-        cursor.continue();
-      } else {
-        resolve();
-      }
-    };
-    req.onerror = () => resolve();
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => resolve([]);
   });
 
-  // 2. Enforce maximum count limit of 300 snapshots (keep 300 newest)
-  await new Promise<void>((resolve) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const index = store.index('timestamp');
+  // Separate auto and manual versions
+  const autoVersions = allItems.filter(item => item.isAutoSave);
+  const manualVersions = allItems.filter(item => !item.isAutoSave);
 
-    const req = index.openCursor(null, 'prev');
-    let count = 0;
+  // Sort both arrays by timestamp descending (newest first)
+  autoVersions.sort((a, b) => b.timestamp - a.timestamp);
+  manualVersions.sort((a, b) => b.timestamp - a.timestamp);
 
-    req.onsuccess = (e: any) => {
-      const cursor = e.target.result;
-      if (cursor) {
-        count++;
-        if (count > MAX_VERSIONS) {
-          store.delete(cursor.primaryKey);
-        }
-        cursor.continue();
-      } else {
-        resolve();
+  const toDeleteIds: string[] = [];
+
+  // If auto versions exceed 300, delete the oldest ones
+  if (autoVersions.length > MAX_AUTO_VERSIONS) {
+    const excess = autoVersions.slice(MAX_AUTO_VERSIONS);
+    for (const item of excess) {
+      toDeleteIds.push(item.id);
+    }
+  }
+
+  // If manual versions exceed 100, delete the oldest ones
+  if (manualVersions.length > MAX_MANUAL_VERSIONS) {
+    const excess = manualVersions.slice(MAX_MANUAL_VERSIONS);
+    for (const item of excess) {
+      toDeleteIds.push(item.id);
+    }
+  }
+
+  if (toDeleteIds.length > 0) {
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      let completed = 0;
+      for (const id of toDeleteIds) {
+        const req = store.delete(id);
+        req.onsuccess = req.onerror = () => {
+          completed++;
+          if (completed === toDeleteIds.length) {
+            resolve();
+          }
+        };
       }
-    };
-    req.onerror = () => resolve();
-  });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  }
 }
