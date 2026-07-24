@@ -3,14 +3,13 @@ export interface SqlVersionItem {
   timestamp: number;
   formattedTime: string;
   sql: string;
-  dialect: 'PostgreSQL' | 'Oracle' | 'Clickhouse';
   label?: string;
   isAutoSave: boolean;
   charCount: number;
   lineCount: number;
 }
 
-const DB_NAME = 'SQLFlow_VersionHistory_DB';
+const DB_NAME = 'SQL_VersionHistory_DB';
 const STORE_NAME = 'versions';
 const RETENTION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days depth (72 hours)
 
@@ -35,7 +34,6 @@ function openDB(): Promise<IDBDatabase> {
 
 export async function saveVersion(
   sql: string,
-  dialect: 'PostgreSQL' | 'Oracle' | 'Clickhouse',
   label?: string,
   isAutoSave: boolean = false
 ): Promise<SqlVersionItem> {
@@ -61,8 +59,7 @@ export async function saveVersion(
     timestamp,
     formattedTime,
     sql,
-    dialect,
-    label: label || (isAutoSave ? 'Автосохранение (30 мин)' : 'Ручной снимок'),
+    label: label || (isAutoSave ? 'Автосохранение' : 'Ручной снимок'),
     isAutoSave,
     charCount: sql.length,
     lineCount: lines

@@ -25,8 +25,6 @@ interface VersionHistoryModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentSql: string;
-  currentDialect: 'PostgreSQL' | 'Oracle' | 'Clickhouse';
-  onRestoreVersion: (sql: string, dialect: 'PostgreSQL' | 'Oracle' | 'Clickhouse') => void;
   theme: 'dark' | 'light';
 }
 
@@ -88,7 +86,6 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
   isOpen,
   onClose,
   currentSql,
-  currentDialect,
   onRestoreVersion,
   theme
 }) => {
@@ -123,7 +120,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
   const handleCreateSnapshot = async () => {
     if (!currentSql.trim()) return;
     try {
-      const item = await saveVersion(currentSql, currentDialect, newLabel.trim() || 'Ручной снимок', false);
+      const item = await saveVersion(currentSql, newLabel.trim() || 'Ручной снимок', false);
       setNewLabel('');
       await loadHistory();
       setSelectedVersion(item);
@@ -150,7 +147,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
   };
 
   const handleRestore = (ver: SqlVersionItem) => {
-    onRestoreVersion(ver.sql, ver.dialect);
+    onRestoreVersion(ver.sql);
     setRestoredId(ver.id);
     setTimeout(() => {
       setRestoredId(null);
@@ -331,7 +328,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                       }`}>
                         <span>{ver.formattedTime}</span>
                         <div className="flex items-center gap-2 font-mono text-[10px]">
-                          <span className={theme === 'dark' ? 'text-blue-400' : 'text-blue-700'}>{ver.dialect}</span>
+                          <span className={theme === 'dark' ? 'text-blue-400' : 'text-blue-700'}></span>
                           <span className={theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}>{ver.lineCount} строк</span>
                         </div>
                       </div>

@@ -6,7 +6,7 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "SQL Flow Visualizer",
+    "productName": "SQL Visualizer",
     "version": "1.0.0"
   },
   "tauri": {
@@ -33,7 +33,7 @@
     },
     "windows": [
       {
-        "title": "SQL Flow Visualizer",
+        "title": "SQL Visualizer",
         "width": 1200,
         "height": 800,
         "resizable": true

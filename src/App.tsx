@@ -1457,7 +1457,7 @@ export default function App() {
                 </div>
                 <div className={`text-sm font-semibold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Песочница пуста</div>
                 <div className={`text-xs max-w-xs leading-normal ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
-                  Введите ваш SQL-запрос в редактор слева и нажмите <strong className={theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}>Visualize Data Flow</strong> для построения интерактивного логического графа.
+                  Введите SQL-запрос в редактор слева и нажмите <strong className={theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}>Visualize</strong> для построения интерактивного логического графа.
                 </div>
               </div>
             )}
@@ -1614,8 +1614,8 @@ export default function App() {
                       <div className="space-y-1.5">
                         <div className={`text-[11px] ${theme === 'dark' ? 'text-slate-200' : 'text-slate-700'}`}>
                           {selectedNode.data.columns?.some((col: any) => col.name && col.name.includes('Operation:'))
-                            ? 'Итоговый результат выполнения DML-операции (модификация данных):'
-                            : 'Итоговый набор колонок, который возвращается пользователю в результате выполнения SELECT:'}
+                            ? ''
+                            : ''}
                         </div>
                         <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
                           {selectedNode.data.columns?.map((col: any, idx: number) => (
@@ -1675,11 +1675,6 @@ export default function App() {
                 <h3 className={`font-bold text-sm ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>
                   SQL Query Editor
                 </h3>
-                <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
-                  theme === 'dark' ? 'bg-slate-700 text-slate-300' : 'bg-white text-slate-800 border border-slate-300 shadow-2xs font-semibold'
-                }`}>
-                  Полноэкранный режим
-                </span>
               </div>
 
               <div className="flex items-center gap-2 sm:gap-3">
