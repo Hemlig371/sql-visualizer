@@ -80,6 +80,7 @@ interface SavedSession {
   direction?: 'LR' | 'TB';
   theme?: 'dark' | 'light';
   isWrapSql?: boolean;
+  isMaximizedSql?: boolean;
 }
 
 const getSavedSession = (): SavedSession | null => {
@@ -104,7 +105,7 @@ export default function App() {
   const [showSortNodes, setShowSortNodes] = useState<boolean>(false);
   const [showLimitNodes, setShowLimitNodes] = useState<boolean>(false);
   const [isWrapSql, setIsWrapSql] = useState<boolean>(() => savedSession?.isWrapSql ?? false);
-  const [isMaximizedSql, setIsMaximizedSql] = useState<boolean>(false);
+  const [isMaximizedSql, setIsMaximizedSql] = useState<boolean>(() => savedSession?.isMaximizedSql ?? true);
   const [showSnippetsModal, setShowSnippetsModal] = useState<boolean>(false);
   const [showPresetsDropdown, setShowPresetsDropdown] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
@@ -150,7 +151,8 @@ export default function App() {
     dialect,
     direction,
     theme,
-    isWrapSql
+    isWrapSql,
+    isMaximizedSql
   });
 
   useEffect(() => {
@@ -161,9 +163,10 @@ export default function App() {
       dialect,
       direction,
       theme,
-      isWrapSql
+      isWrapSql,
+      isMaximizedSql
     };
-  }, [tabs, activeTabId, sql, dialect, direction, theme, isWrapSql]);
+  }, [tabs, activeTabId, sql, dialect, direction, theme, isWrapSql, isMaximizedSql]);
 
   const saveSessionToStorage = useCallback(() => {
     try {
@@ -1079,7 +1082,12 @@ export default function App() {
           }
         }
       } catch (err: any) {
-        setError(`Layout / AST Mapping error: ${err.message || String(err)}`);
+        const errMsg = err.message || String(err);
+        if (!errMsg.includes("Not a SELECT query")) {
+          setError(`Layout / AST Mapping error: ${errMsg}`);
+        } else {
+          setError(null);
+        }
       }
     }
   }, [astResult, dialect, direction, showSortNodes, showLimitNodes, expandedQueries, handleToggleExpand, setNodes, setEdges]);
@@ -1288,7 +1296,7 @@ export default function App() {
             </ErrorBoundary>
 
             {/* SYNTAX ERROR LOG PANEL */}
-            {error && (
+            {error && !error.includes("Not a SELECT query") && (
               <div className={`p-3 border rounded-md shadow-lg absolute bottom-1.5 left-1.5 right-1.5 max-h-40 overflow-y-auto transition-all ${
                 theme === 'dark' ? 'bg-red-950/95 border-red-500/40 text-slate-200' : 'bg-red-50 border-red-200 text-red-900 shadow-md'
               }`}>
