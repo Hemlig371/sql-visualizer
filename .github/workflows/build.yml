@@ -54,7 +54,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__ # This will be automatically replaced with the version in tauri.conf.json
-          releaseName: "SQL Flow Visualizer v__VERSION__"
-          releaseBody: "Draft release of SQL Flow Visualizer desktop application."
+          releaseName: "SQL Visualizer v__VERSION__"
+          releaseBody: "Draft release of SQL Visualizer desktop application."
           releaseDraft: true
           prerelease: false
