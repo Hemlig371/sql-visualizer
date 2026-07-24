@@ -2,7 +2,7 @@ export interface SQLPreset {
   id: string;
   title: string;
   description: string;
-  dialect: 'PostgreSQL' | 'Oracle' | 'Clickhouse' | 'DuckDB';
+  dialect: 'PostgreSQL' | 'Oracle' | 'Clickhouse' | 'DuckDB' | '';
   sql: string;
 }
 

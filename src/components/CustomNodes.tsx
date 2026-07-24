@@ -13,6 +13,23 @@ interface CustomNodeProps {
   sourcePosition?: Position;
 }
 
+function isNodePropsEqual(prevProps: CustomNodeProps, nextProps: CustomNodeProps): boolean {
+  if (prevProps.selected !== nextProps.selected) return false;
+  if (prevProps.targetPosition !== nextProps.targetPosition) return false;
+  if (prevProps.sourcePosition !== nextProps.sourcePosition) return false;
+  if (prevProps.data === nextProps.data) return true;
+  if (!prevProps.data || !nextProps.data) return prevProps.data === nextProps.data;
+  
+  // Shallow compare data keys
+  const keysA = Object.keys(prevProps.data);
+  const keysB = Object.keys(nextProps.data);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (prevProps.data[key] !== nextProps.data[key]) return false;
+  }
+  return true;
+}
+
 // TABLE NODE (Blue)
 export const TableNode = memo(({ data, selected, targetPosition, sourcePosition }: CustomNodeProps) => {
   return (
@@ -69,7 +86,7 @@ export const TableNode = memo(({ data, selected, targetPosition, sourcePosition 
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 TableNode.displayName = 'TableNode';
 
@@ -93,7 +110,7 @@ export const JoinNode = memo(({ data, selected, targetPosition, sourcePosition }
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 JoinNode.displayName = 'JoinNode';
 
@@ -111,9 +128,11 @@ export const FilterNode = memo(({ data, selected, targetPosition, sourcePosition
         <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
           {data.columns && data.columns.length > 0 ? (
             data.columns.map((col: any, idx: number) => {
-              const isOp = col.name.toUpperCase().startsWith('AND ') || col.name.toUpperCase().startsWith('OR ');
-              const text = isOp ? col.name.substring(col.name.indexOf(' ') + 1) : col.name;
-              const op = isOp ? col.name.substring(0, col.name.indexOf(' ')) : '';
+              const colName = typeof col === 'string' ? col : (col?.name || (col ? String(col) : ''));
+              const upperCol = typeof colName === 'string' ? colName.toUpperCase() : '';
+              const isOp = upperCol.startsWith('AND ') || upperCol.startsWith('OR ');
+              const text = isOp ? colName.substring(colName.indexOf(' ') + 1) : colName;
+              const op = isOp ? colName.substring(0, colName.indexOf(' ')) : '';
               return (
                 <div key={idx} className="flex flex-col">
                   {op && <span className="text-[9px] font-bold text-orange-800 dark:text-orange-400 mb-0.5 ml-1">{op}</span>}
@@ -134,7 +153,7 @@ export const FilterNode = memo(({ data, selected, targetPosition, sourcePosition
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 FilterNode.displayName = 'FilterNode';
 
@@ -155,7 +174,7 @@ export const GroupByNode = memo(({ data, selected, targetPosition, sourcePositio
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 GroupByNode.displayName = 'GroupByNode';
 
@@ -171,9 +190,11 @@ export const HavingNode = memo(({ data, selected, targetPosition, sourcePosition
         <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
           {data.columns && data.columns.length > 0 ? (
             data.columns.map((col: any, idx: number) => {
-              const isOp = col.name.toUpperCase().startsWith('AND ') || col.name.toUpperCase().startsWith('OR ');
-              const text = isOp ? col.name.substring(col.name.indexOf(' ') + 1) : col.name;
-              const op = isOp ? col.name.substring(0, col.name.indexOf(' ')) : '';
+              const colName = typeof col === 'string' ? col : (col?.name || (col ? String(col) : ''));
+              const upperCol = typeof colName === 'string' ? colName.toUpperCase() : '';
+              const isOp = upperCol.startsWith('AND ') || upperCol.startsWith('OR ');
+              const text = isOp ? colName.substring(colName.indexOf(' ') + 1) : colName;
+              const op = isOp ? colName.substring(0, colName.indexOf(' ')) : '';
               return (
                 <div key={idx} className="flex flex-col">
                   {op && <span className="text-[9px] font-bold text-rose-800 dark:text-rose-400 mb-0.5 ml-1">{op}</span>}
@@ -194,7 +215,7 @@ export const HavingNode = memo(({ data, selected, targetPosition, sourcePosition
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 HavingNode.displayName = 'HavingNode';
 
@@ -215,7 +236,7 @@ export const SortNode = memo(({ data, selected, targetPosition, sourcePosition }
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 SortNode.displayName = 'SortNode';
 
@@ -236,7 +257,7 @@ export const LimitNode = memo(({ data, selected, targetPosition, sourcePosition 
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 LimitNode.displayName = 'LimitNode';
 
@@ -293,7 +314,7 @@ export const ResultNode = memo(({ data, selected, targetPosition, sourcePosition
       <Handle type="source" position={sourcePosition || Position.Right} className="w-3 h-3 !bg-slate-300 dark:!bg-slate-700 !border-slate-500 dark:!border-slate-400" />
     </div>
   );
-});
+}, isNodePropsEqual);
 
 ResultNode.displayName = 'ResultNode';
 
@@ -326,7 +347,7 @@ export const QueryGroupNode = memo(({ data, selected, targetPosition, sourcePosi
       <Handle type="source" position={sourcePosition || Position.Right} className="w-2 h-2 bg-slate-400 dark:bg-slate-500" />
     </>
   );
-});
+}, isNodePropsEqual);
 
 QueryGroupNode.displayName = 'QueryGroupNode';
 
@@ -351,7 +372,7 @@ export const CollapseNode = memo(({ data, selected, targetPosition, sourcePositi
       <Handle type="source" position={sourcePosition || Position.Right} className="w-2 h-2 bg-slate-400 dark:bg-slate-500" />
     </>
   );
-});
+}, isNodePropsEqual);
 
 CollapseNode.displayName = 'CollapseNode';
 

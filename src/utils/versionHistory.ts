@@ -12,6 +12,7 @@ export interface SqlVersionItem {
 const DB_NAME = 'SQL_VersionHistory_DB';
 const STORE_NAME = 'versions';
 const RETENTION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days depth (72 hours)
+const MAX_VERSIONS = 300; // Maximum number of snapshots in history
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -118,9 +119,27 @@ export async function clearAllVersions(): Promise<void> {
   });
 }
 
+export async function getVersionById(id: string): Promise<SqlVersionItem | null> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    console.warn(`Failed to load version ${id} from IndexedDB`, e);
+    return null;
+  }
+}
+
 async function cleanupOldVersions(db: IDBDatabase): Promise<void> {
   const cutoff = Date.now() - RETENTION_MS;
-  return new Promise((resolve) => {
+
+  // 1. Delete items older than RETENTION_MS (72 hours)
+  await new Promise<void>((resolve) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
     const index = store.index('timestamp');
@@ -131,6 +150,30 @@ async function cleanupOldVersions(db: IDBDatabase): Promise<void> {
       const cursor = e.target.result;
       if (cursor) {
         store.delete(cursor.primaryKey);
+        cursor.continue();
+      } else {
+        resolve();
+      }
+    };
+    req.onerror = () => resolve();
+  });
+
+  // 2. Enforce maximum count limit of 300 snapshots (keep 300 newest)
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const index = store.index('timestamp');
+
+    const req = index.openCursor(null, 'prev');
+    let count = 0;
+
+    req.onsuccess = (e: any) => {
+      const cursor = e.target.result;
+      if (cursor) {
+        count++;
+        if (count > MAX_VERSIONS) {
+          store.delete(cursor.primaryKey);
+        }
         cursor.continue();
       } else {
         resolve();

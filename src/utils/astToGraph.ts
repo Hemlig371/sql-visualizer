@@ -342,7 +342,7 @@ function extractSubqueriesFromString(text: string): { subquerySql: string; start
       while (j < tokens.length && (tokens[j].type === 'whitespace' || tokens[j].type === 'comment')) j++;
       
       if (j < tokens.length && tokens[j].type === 'word') {
-        const nextWord = tokens[j].value.toUpperCase();
+        const nextWord = String(tokens[j].value || '').toUpperCase();
         if (nextWord === 'SELECT' || nextWord === 'WITH') {
           let depth = 1;
           let k = i + 1;
@@ -410,7 +410,7 @@ function splitConditions(text: string): { name: string }[] {
       if (t.value === '(') parenDepth++;
       else if (t.value === ')') parenDepth = Math.max(0, parenDepth - 1);
     } else if (t.type === 'word' && parenDepth === 0) {
-      const upper = t.value.toUpperCase();
+      const upper = String(t.value || '').toUpperCase();
       if (upper === 'AND' || upper === 'OR') {
         const chunk = text.substring(currentStart, t.start).trim();
         if (chunk) {
@@ -444,7 +444,7 @@ function parseHeuristicColumn(colStr: string): any {
       else if (t.value === '[') bracketDepth++;
       else if (t.value === ']') bracketDepth = Math.max(0, bracketDepth - 1);
     } else if (parenDepth === 0 && bracketDepth === 0) {
-      if (t.type === 'word' && t.value.toUpperCase() === 'AS') {
+      if (t.type === 'word' && String(t.value || '').toUpperCase() === 'AS') {
         lastAsIndex = t.start;
       } else if (t.type === 'whitespace') {
         lastSpaceIndex = t.start;
@@ -521,7 +521,7 @@ function splitProcedureStatements(bodyStr: string): string[] {
         lastWord = ''; 
       }
     } else if (t.type === 'word') {
-      const upper = t.value.toUpperCase();
+      const upper = String(t.value || '').toUpperCase();
       
       if (parenDepth === 0) {
         if (upper === 'THEN' || upper === 'ELSE' || upper === 'BEGIN' || (upper === 'LOOP' && lastWord !== 'END')) {
@@ -581,7 +581,7 @@ export function splitQueries(sql: string): string[] {
         }
       }
     } else if (t.type === 'word') {
-      const upper = t.value.toUpperCase();
+      const upper = String(t.value || '').toUpperCase();
       
       if (upper === 'PROCEDURE' || upper === 'FUNCTION' || upper === 'TRIGGER' || upper === 'PACKAGE' || upper === 'DECLARE') {
         isProc = true;
@@ -589,7 +589,7 @@ export function splitQueries(sql: string): string[] {
       
       if (upper === 'BEGIN') {
         const nextToken = getNextSignificantToken(i);
-        const isTransaction = nextToken && (nextToken.value === ';' || nextToken.value.toUpperCase() === 'TRANSACTION' || nextToken.value.toUpperCase() === 'WORK');
+        const isTransaction = nextToken && (nextToken.value === ';' || String(nextToken.value || '').toUpperCase() === 'TRANSACTION' || String(nextToken.value || '').toUpperCase() === 'WORK');
         
         if (!isTransaction) {
           blockDepth++;
@@ -622,7 +622,7 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
       if (t.value === '(') parenDepth++;
       else if (t.value === ')') parenDepth = Math.max(0, parenDepth - 1);
     } else if (t.type === 'word' && parenDepth === 0) {
-      const upper = t.value.toUpperCase();
+      const upper = String(t.value || '').toUpperCase();
       if (upper === 'UNION' || upper === 'INTERSECT' || upper === 'EXCEPT') {
         let nextIdx = i + 1;
         while (nextIdx < tokens.length && (tokens[nextIdx].type === 'whitespace' || tokens[nextIdx].type === 'comment')) {
@@ -632,7 +632,7 @@ function splitTopLevelUnion(sql: string): { parts: string[], ops: string[] } | n
         let op = upper;
         let splitEnd = t.end;
 
-        if (nextIdx < tokens.length && tokens[nextIdx].type === 'word' && tokens[nextIdx].value.toUpperCase() === 'ALL') {
+        if (nextIdx < tokens.length && tokens[nextIdx].type === 'word' && String(tokens[nextIdx].value || '').toUpperCase() === 'ALL') {
           op += ' ALL';
           splitEnd = tokens[nextIdx].end;
           i = nextIdx; 
@@ -721,7 +721,7 @@ export function parseHeuristicDml(sql: string, dialect: string): any {
     }
 
     let selectAst: any = null;
-    if (selectOrValuesMatch && ['SELECT', 'UNION', 'WITH'].includes(selectOrValuesMatch[1].toUpperCase())) {
+    if (selectOrValuesMatch && selectOrValuesMatch[1] && ['SELECT', 'UNION', 'WITH'].includes(selectOrValuesMatch[1].toUpperCase())) {
       let selectSql = cleanSql.substring(selectOrValuesMatch.index).trim();
       if (onConflictMatch !== -1 && onConflictMatch > selectOrValuesMatch.index) {
           selectSql = cleanSql.substring(selectOrValuesMatch.index, onConflictMatch).trim();
@@ -961,7 +961,7 @@ function parseHeuristicFromAndJoins(fromBlock: string, dialect: string): any[] {
     }
 
     for (let i = 1; i < parts.length; i += 2) {
-      const joinKeyword = parts[i].trim().toUpperCase();
+      const joinKeyword = String(parts[i] || '').trim().toUpperCase();
       const tableAndCondition = parts[i + 1]?.trim() || '';
 
       const onIndex = tableAndCondition.search(/\bON\b/i);
@@ -1228,7 +1228,7 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
     const varStatements = splitQueries(varsSection);
     varStatements.forEach(v => {
       const vTokens = tokenizeSql(v);
-      const firstWord = vTokens.find(t => t.type === 'word')?.value.toUpperCase();
+      const firstWord = vTokens.find(t => t.type === 'word')?.value?.toUpperCase();
       
       if (firstWord === 'CURSOR') {
         rawSteps.push(v);
@@ -1250,7 +1250,7 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
       let title = `Step ${idx + 1}`;
 
       const stepTokens = tokenizeSql(text);
-      const firstWord = stepTokens.find(t => t.type === 'word')?.value.toUpperCase();
+      const firstWord = stepTokens.find(t => t.type === 'word')?.value?.toUpperCase();
 
       if (firstWord === 'SELECT' || firstWord === 'WITH') {
         stepType = 'select_step';
@@ -1270,7 +1270,7 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
       } else if (firstWord === 'CURSOR') {
         stepType = 'select_step';
         title = 'CURSOR Declaration';
-        const isOrForToken = stepTokens.find(t => t.type === 'word' && (t.value.toUpperCase() === 'IS' || t.value.toUpperCase() === 'FOR'));
+        const isOrForToken = stepTokens.find(t => t.type === 'word' && (String(t.value || '').toUpperCase() === 'IS' || String(t.value || '').toUpperCase() === 'FOR'));
         if (isOrForToken) {
            const queryPart = text.substring(isOrForToken.end).trim();
            parsedQuery = parseSingleSqlToAst(queryPart, dialect).ast;
@@ -1315,7 +1315,7 @@ function parseHeuristicProcedure(sql: string, dialect: string): any {
   return ast;
 }
 
-export function parseSingleSqlToAst(sql: string, dialect: string): any {
+export function parseSingleSqlToAst(sql: string, dialect = 'PostgreSQL'): any {
   const cleanSql = sql.trim(); 
   const upperSql = cleanSql.toUpperCase();
   const isProcedure = /^\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TYPE|TRIGGER)|PROCEDURE\b|FUNCTION\b|DECLARE\b|BEGIN\b)/i.test(upperSql);
@@ -1363,12 +1363,10 @@ export function parseSingleSqlToAst(sql: string, dialect: string): any {
   const isDml = /^\s*(?:INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|MERGE\s+INTO)\b/i.test(cleanSql);
 
   let parserDialect = 'postgresql';
-  const lowerDialect = dialect.toLowerCase();
+  const lowerDialect = (dialect || 'PostgreSQL').toLowerCase();
   if (lowerDialect.includes('postgres')) {
     parserDialect = 'postgresql';
-  } else if (lowerDialect.includes('oracle') || lowerDialect.includes('pl')) {
-    parserDialect = 'oracle';
-  } else if (lowerDialect.includes('clickhouse')) {
+  } else if (lowerDialect.includes('oracle') || lowerDialect.includes('pl') || lowerDialect.includes('clickhouse') || lowerDialect.includes('duckdb')) {
     parserDialect = 'postgresql';
   } else {
     parserDialect = lowerDialect;
@@ -1397,7 +1395,7 @@ export function parseSingleSqlToAst(sql: string, dialect: string): any {
   }
 }
 
-export function parseSqlToAst(sql: string, dialect: string): any {
+export function parseSqlToAst(sql: string, dialect = 'PostgreSQL'): any {
   const cleanSql = stripCommentsSafely(sql).trim();
 
   const queries = splitQueries(cleanSql);
@@ -1508,7 +1506,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
           id: unionStepId, 
           type: 'joinNode', 
           data: { 
-            joinType: op.toUpperCase(), 
+            joinType: String(op || 'UNION').toUpperCase(), 
             condition: '' 
           }, 
           position: { x: 0, y: 0 }
@@ -1530,7 +1528,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     
     targetTables.forEach((t: any, tIdx: number) => {
       const tId = `${prefix}target_${tIdx}`;
-      ctx.nodes.push({ id: tId, type: 'tableNode', data: { label: t.table || 'TARGET', title: `Target (${queryType.toUpperCase()})` }, position: { x: 0, y: 0 }});
+      ctx.nodes.push({ id: tId, type: 'tableNode', data: { label: t.table || 'TARGET', title: `Target (${String(queryType || '').toUpperCase()})` }, position: { x: 0, y: 0 }});
       targetIds.push(tId);
     });
 
@@ -1566,7 +1564,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
     }
 
     const resId = `${prefix}dml_result`;
-    ctx.nodes.push({ id: resId, type: 'resultNode', data: { title: `Operation: ${queryType.toUpperCase()}` }, position: { x: 0, y: 0 }});
+    ctx.nodes.push({ id: resId, type: 'resultNode', data: { title: `Operation: ${String(queryType || '').toUpperCase()}` }, position: { x: 0, y: 0 }});
     addEdge(ctx, currentInputId, resId);
     return resId;
   }
@@ -1578,7 +1576,7 @@ function buildDataPipeline(ast: any, prefix: string, dialect: string, ctx: Graph
       id: stmtId, 
       type: 'filterNode', 
       data: { 
-        title: queryType.toUpperCase().replace('_', ' '), 
+        title: String(queryType || '').toUpperCase().replace('_', ' '), 
         condition: ast.text || 'Raw Query Block' 
       }, 
       position: { x: 0, y: 0 }
@@ -1802,38 +1800,106 @@ export function astToGraph(
            lastStepId = sId;
         }
      });
-     return { nodes: ctx.nodes, edges: ctx.edges, outputId: lastStepId };
+
+     const cleanNodes = ctx.nodes.map(n => {
+       const data = n.data || {};
+       return {
+         id: n.id,
+         type: n.type,
+         position: n.position || { x: 0, y: 0 },
+         data: {
+           label: data.label,
+           title: data.title,
+           tableName: data.tableName,
+           alias: data.alias,
+           condition: data.condition,
+           joinType: data.joinType,
+           columns: data.columns,
+           details: data.details,
+           queryText: data.queryText,
+           queryId: data.queryId,
+           isSubquery: data.isSubquery,
+           subqueryTables: data.subqueryTables,
+           onToggle: data.onToggle
+         }
+       };
+     });
+
+     const cleanEdges = ctx.edges.map(e => ({
+       id: e.id,
+       source: e.source,
+       target: e.target,
+       label: e.label,
+       type: e.type,
+       animated: e.animated,
+       style: e.style
+     }));
+
+     return { nodes: cleanNodes, edges: cleanEdges, outputId: lastStepId };
   }
 
   const finalId = buildDataPipeline(ast, prefix, dialect, ctx);
-  return { nodes: ctx.nodes, edges: ctx.edges, outputId: finalId };
+
+  const cleanNodes = ctx.nodes.map(n => {
+    const data = n.data || {};
+    return {
+      id: n.id,
+      type: n.type,
+      position: n.position || { x: 0, y: 0 },
+      data: {
+        label: data.label,
+        title: data.title,
+        tableName: data.tableName,
+        alias: data.alias,
+        condition: data.condition,
+        joinType: data.joinType,
+        columns: data.columns,
+        details: data.details,
+        queryText: data.queryText,
+        queryId: data.queryId,
+        isSubquery: data.isSubquery,
+        subqueryTables: data.subqueryTables,
+        onToggle: data.onToggle
+      }
+    };
+  });
+
+  const cleanEdges = ctx.edges.map(e => ({
+    id: e.id,
+    source: e.source,
+    target: e.target,
+    label: e.label,
+    type: e.type,
+    animated: e.animated,
+    style: e.style
+  }));
+
+  return { nodes: cleanNodes, edges: cleanEdges, outputId: finalId };
 }
+
+// Dagre layout cache to prevent recalculations when topology hasn't changed
+const layoutPositionCache = new Map<string, Record<string, { x: number; y: number }>>();
+const MAX_LAYOUT_CACHE_SIZE = 50;
 
 export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], direction = 'LR') {
   const isHorizontal = direction === 'LR';
-  
-  const dagreGraph = new dagre.graphlib.Graph();
-  dagreGraph.setDefaultEdgeLabel(() => ({}));
-  
-  dagreGraph.setGraph({ 
-    rankdir: direction, 
-    nodesep: 30, // Уменьшили верт. отступ (так как высота узлов теперь честная)
-    ranksep: 80, 
-    ranker: 'tight-tree' 
-  });
 
-  // Строго ограничиваем высоту (Math.min), чтобы она совпадала с Tailwind 'max-h-56' (224px + отступы)
+  // Build topology key based on node IDs, types, edges, and direction
+  const nodeKey = nodes.map(n => `${n.id}:${n.type}`).join('|');
+  const edgeKey = edges.map(e => `${e.source}->${e.target}`).join('|');
+  const topologyKey = `${direction}_${nodeKey}_${edgeKey}`;
+
+  const cachedPositions = layoutPositionCache.get(topologyKey);
+
   const getNodeDimensions = (node: GraphNode) => {
-    let width = 256; // Строго Tailwind w-64
+    let width = 256; // Tailwind w-64
     let height = 90;
 
     if (['resultNode', 'filterNode', 'havingNode'].includes(node.type)) {
       const rows = node.data?.columns?.length || 1;
-      // Каждый row ~45px. Максимум высоты 280px (Tailwind max-h-56 + header)
       height = Math.min(280, 70 + rows * 45); 
     } else if (node.type === 'tableNode') {
       const rows = node.data?.columns?.length || 1;
-      // У таблицы max-h-48. Максимум высоты ~ 250px
       height = Math.min(250, 90 + rows * 30);
     } else if (['limitNode', 'sortNode'].includes(node.type)) {
       height = 70;
@@ -1843,6 +1909,29 @@ export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], dire
     
     return { width, height };
   };
+
+  if (cachedPositions) {
+    const newNodes = nodes.map((node) => {
+      const pos = cachedPositions[node.id] || node.position || { x: 0, y: 0 };
+      return {
+        ...node,
+        targetPosition: isHorizontal ? 'left' as const : 'top' as const,
+        sourcePosition: isHorizontal ? 'right' as const : 'bottom' as const,
+        position: pos
+      };
+    });
+    return { nodes: newNodes, edges };
+  }
+  
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+  
+  dagreGraph.setGraph({ 
+    rankdir: direction, 
+    nodesep: 30,
+    ranksep: 80, 
+    ranker: 'tight-tree' 
+  });
 
   nodes.forEach((node) => {
     const { width, height } = getNodeDimensions(node);
@@ -1855,22 +1944,32 @@ export function getLayoutedElements(nodes: GraphNode[], edges: GraphEdge[], dire
 
   dagre.layout(dagreGraph);
 
+  const newPositions: Record<string, { x: number; y: number }> = {};
+
   const newNodes = nodes.map((node) => {
     const nodeWithPosition = dagreGraph.node(node.id);
     if (!nodeWithPosition) return node;
 
     const { width, height } = getNodeDimensions(node);
+    const pos = {
+      x: nodeWithPosition.x - width / 2,
+      y: nodeWithPosition.y - height / 2,
+    };
+    newPositions[node.id] = pos;
     
     return {
       ...node,
       targetPosition: isHorizontal ? 'left' as const : 'top' as const,
       sourcePosition: isHorizontal ? 'right' as const : 'bottom' as const,
-      position: {
-        x: nodeWithPosition.x - width / 2,
-        y: nodeWithPosition.y - height / 2,
-      },
+      position: pos,
     };
   });
+
+  if (layoutPositionCache.size >= MAX_LAYOUT_CACHE_SIZE) {
+    const firstKey = layoutPositionCache.keys().next().value;
+    if (firstKey) layoutPositionCache.delete(firstKey);
+  }
+  layoutPositionCache.set(topologyKey, newPositions);
 
   return { nodes: newNodes, edges };
 }

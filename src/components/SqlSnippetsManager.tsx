@@ -16,7 +16,8 @@ import {
   FileJson,
   Play,
   CornerDownRight,
-  Database
+  Database,
+  Star
 } from 'lucide-react';
 import { SqlEditor, highlightSqlHtml } from './SqlEditor';
 
@@ -1120,22 +1121,28 @@ export const POPULAR_SNIPPETS: Snippet[] = [
   }
 ];
 
+import { UiVisibilitySettings } from './SettingsModal';
+
 interface SqlSnippetsManagerProps {
   isOpen: boolean;
   onClose: () => void;
   onInsertSnippet: (snippetSql: string, replaceMode?: boolean) => void;
   theme: 'dark' | 'light';
+  uiVisibility?: UiVisibilitySettings;
 }
 
 const LOCAL_STORAGE_KEY = 'sql_custom_snippets_v2';
+const LOCAL_STORAGE_FAVORITES_KEY = 'sql_favorite_snippets_ids_v1';
 
 export function SqlSnippetsManager({
   isOpen,
   onClose,
   onInsertSnippet,
-  theme
+  theme,
+  uiVisibility
 }: SqlSnippetsManagerProps) {
   const [customSnippets, setCustomSnippets] = useState<Snippet[]>([]);
+  const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('Все');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isCreating, setIsCreating] = useState<boolean>(false);
@@ -1151,7 +1158,7 @@ export function SqlSnippetsManager({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load custom snippets
+  // Load custom snippets and favorites
   useEffect(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -1160,6 +1167,14 @@ export function SqlSnippetsManager({
       }
     } catch (e) {
       console.error('Failed to parse custom snippets from localStorage', e);
+    }
+    try {
+      const savedFavs = localStorage.getItem(LOCAL_STORAGE_FAVORITES_KEY);
+      if (savedFavs) {
+        setFavoriteIds(JSON.parse(savedFavs));
+      }
+    } catch (e) {
+      console.error('Failed to parse favorites from localStorage', e);
     }
   }, []);
 
@@ -1172,18 +1187,39 @@ export function SqlSnippetsManager({
     }
   };
 
+  const toggleFavorite = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    let updated: string[];
+    if (favoriteIds.includes(id)) {
+      updated = favoriteIds.filter(fId => fId !== id);
+    } else {
+      updated = [...favoriteIds, id];
+    }
+    setFavoriteIds(updated);
+    try {
+      localStorage.setItem(LOCAL_STORAGE_FAVORITES_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Failed to save favorites to localStorage', e);
+    }
+  };
+
   if (!isOpen) return null;
 
   const allSnippets = [...POPULAR_SNIPPETS, ...customSnippets];
 
-  // Derive unique categories dynamically (NO hardcoded "Мои сниппеты")
+  // Derive unique categories dynamically
   const existingCategories = Array.from(new Set(allSnippets.map(s => s.category))).filter(Boolean);
-  const categories = ['Все', ...existingCategories];
+  const categories = [
+    'Все', 
+    ...(uiVisibility?.showSnippetFavorites !== false ? ['Избранное'] : []), 
+    ...existingCategories
+  ];
 
   // Filter snippets
   const filteredSnippets = allSnippets.filter(s => {
     const matchesCat = 
       selectedCategory === 'Все' ? true :
+      selectedCategory === 'Избранное' ? favoriteIds.includes(s.id) :
       s.category === selectedCategory || s.dialect === selectedCategory;
 
     const matchesSearch = 
@@ -1381,7 +1417,7 @@ export function SqlSnippetsManager({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-5 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 flex items-center justify-center p-2 sm:p-5 animate-in fade-in duration-200">
       <div className={`w-full max-w-5xl h-[90vh] border rounded-xl flex flex-col shadow-2xl overflow-hidden transition-colors ${
         theme === 'dark' ? 'bg-slate-850 border-slate-700 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
       }`}>
@@ -1451,19 +1487,23 @@ export function SqlSnippetsManager({
               className="hidden" 
             />
 
-            <div className="h-5 w-px bg-slate-300 dark:bg-slate-700 my-auto" />
+            {uiVisibility?.showSnippetCreateBtn !== false && (
+            <>
+              <div className="h-5 w-px bg-slate-300 dark:bg-slate-700 my-auto" />
 
-            {/* CREATE CUSTOM SNIPPET */}
-            <button
-              onClick={() => {
-                resetForm();
-                setIsCreating(true);
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-xs transition-all"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Создать сниппет</span>
-            </button>
+              {/* CREATE CUSTOM SNIPPET */}
+              <button
+                onClick={() => {
+                  resetForm();
+                  setIsCreating(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-xs transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Создать сниппет</span>
+              </button>
+            </>
+            )}
 
             <button
               onClick={onClose}
@@ -1480,11 +1520,13 @@ export function SqlSnippetsManager({
         <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
           
           {/* LEFT SIDEBAR: CATEGORIES & SEARCH */}
+          {(uiVisibility?.showSnippetSearch !== false || uiVisibility?.showSnippetCategories !== false) && (
           <div className={`w-full md:w-60 border-r flex flex-col p-3 space-y-3 shrink-0 ${
             theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-200/50 border-slate-300'
           }`}>
             
             {/* SEARCH BAR */}
+            {uiVisibility?.showSnippetSearch !== false && (
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400 pointer-events-none" />
               <input
@@ -1499,8 +1541,10 @@ export function SqlSnippetsManager({
                 }`}
               />
             </div>
+            )}
 
             {/* CATEGORY LIST */}
+            {uiVisibility?.showSnippetCategories !== false && (
             <div className="flex-1 overflow-y-auto space-y-1 pr-1">
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 pt-1 pb-1">
                 Категории
@@ -1508,6 +1552,7 @@ export function SqlSnippetsManager({
               {categories.map((cat) => {
                 const count = allSnippets.filter(s => 
                   cat === 'Все' ? true :
+                  cat === 'Избранное' ? favoriteIds.includes(s.id) :
                   s.category === cat || s.dialect === cat
                 ).length;
 
@@ -1526,6 +1571,9 @@ export function SqlSnippetsManager({
                     }`}
                   >
                     <span className="truncate flex items-center gap-1.5">
+                      {cat === 'Избранное' && (
+                        <Star className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'fill-amber-300 text-amber-300' : 'fill-amber-400 text-amber-400'}`} />
+                      )}
                       {['PostgreSQL', 'Oracle', 'Clickhouse', 'DuckDB'].includes(cat) && (
                         <Database className="w-3 h-3 text-blue-400 shrink-0" />
                       )}
@@ -1542,7 +1590,9 @@ export function SqlSnippetsManager({
                 );
               })}
             </div>
+            )}
           </div>
+          )}
 
           {/* RIGHT PANEL: SNIPPETS LIST OR FORM */}
           <div className="flex-1 flex flex-col p-4 overflow-y-auto min-h-0 relative">
@@ -1668,129 +1718,153 @@ export function SqlSnippetsManager({
             <div className="space-y-3">
               {filteredSnippets.length === 0 ? (
                 <div className="text-center py-12 text-slate-400">
-                  <Code className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm font-medium">Сниппетов в этой категории не найдено</p>
-                  <p className="text-xs text-slate-500 mt-1">Нажмите "Создать сниппет" или выберите другую категорию</p>
+                  {selectedCategory === 'Избранное' ? (
+                    <Star className="w-10 h-10 mx-auto mb-2 opacity-40 text-amber-400" />
+                  ) : (
+                    <Code className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                  )}
+                  <p className="text-sm font-medium">
+                    {selectedCategory === 'Избранное' ? 'В избранном пока нет сниппетов' : 'Сниппетов в этой категории не найдено'}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {selectedCategory === 'Избранное' 
+                      ? 'Нажмите на звездочку у любого сниппета, чтобы добавить его в избранное'
+                      : 'Нажмите "Создать сниппет" или выберите другую категорию'}
+                  </p>
                 </div>
               ) : (
-                filteredSnippets.map((snippet) => (
-                  <div 
-                    key={snippet.id} 
-                    className={`p-3.5 rounded-xl border transition-all hover:border-blue-500/50 group ${
-                      theme === 'dark' ? 'bg-slate-800/80 border-slate-700/80' : 'bg-white border-slate-300 shadow-xs'
-                    }`}
-                  >
-                    {/* TOP TITLE & ACTIONS */}
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h4 className="font-bold text-xs sm:text-sm text-slate-800 dark:text-slate-100">
-                            {snippet.title}
-                          </h4>
-                          <span className={`px-1.5 py-0.2 rounded text-[10px] font-medium border ${
-                            theme === 'dark' ? 'bg-slate-750 text-slate-300 border-slate-600' : 'bg-slate-200 text-slate-700 border-slate-300'
-                          }`}>
-                            {snippet.category}
-                          </span>
-                          {snippet.isCustom && (
-                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-purple-500/20 text-purple-400 border border-purple-500/30">
-                              Свой
-                            </span>
-                          )}
-                          {snippet.dialect && snippet.dialect !== 'General' && (
-                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-mono border font-semibold ${
-                              snippet.dialect === 'PostgreSQL' ? 'bg-blue-500/10 text-blue-500 border-blue-500/30' :
-                              snippet.dialect === 'Oracle' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
-                              snippet.dialect === 'Clickhouse' ? 'bg-amber-500/10 text-amber-500 border-amber-500/30' :
-                              snippet.dialect === 'DuckDB' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
-                              'bg-slate-500/10 text-slate-500 border-slate-500/30'
-                            }`}>
-                              {snippet.dialect}
-                            </span>
+                filteredSnippets.map((snippet) => {
+                  const isFav = favoriteIds.includes(snippet.id);
+                  return (
+                    <div 
+                      key={snippet.id} 
+                      className={`p-3.5 rounded-xl border transition-all hover:border-blue-500/50 group ${
+                        theme === 'dark' ? 'bg-slate-800/80 border-slate-700/80' : 'bg-white border-slate-300 shadow-xs'
+                      }`}
+                    >
+                      {/* TOP TITLE & ACTIONS */}
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="font-bold text-xs sm:text-sm text-slate-800 dark:text-slate-100">
+                              {snippet.title}
+                            </h4>
+                            {snippet.isCustom && (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-purple-500/20 text-purple-400 border border-purple-500/30">
+                                Свой
+                              </span>
+                            )}
+                            {snippet.dialect && snippet.dialect !== 'General' && (
+                              <span className={`px-1.5 py-0.2 rounded text-[9px] font-mono border font-semibold ${
+                                snippet.dialect === 'PostgreSQL' ? 'bg-blue-500/10 text-blue-500 border-blue-500/30' :
+                                snippet.dialect === 'Oracle' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
+                                snippet.dialect === 'Clickhouse' ? 'bg-amber-500/10 text-amber-500 border-amber-500/30' :
+                                snippet.dialect === 'DuckDB' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
+                                'bg-slate-500/10 text-slate-500 border-slate-500/30'
+                              }`}>
+                                {snippet.dialect}
+                              </span>
+                            )}
+                          </div>
+                          {snippet.description && (
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                              {snippet.description}
+                            </p>
                           )}
                         </div>
-                        {snippet.description && (
-                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                            {snippet.description}
-                          </p>
-                        )}
+
+                        {/* BUTTONS: FAVORITE, INSERT, REPLACE, COPY, EDIT, DELETE */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {/* FAVORITE STAR BUTTON */}
+                          {uiVisibility?.showSnippetFavorites !== false && (
+                          <button
+                            onClick={(e) => toggleFavorite(snippet.id, e)}
+                            className={`p-1.5 rounded-md border transition-all ${
+                              isFav
+                                ? 'bg-amber-500/15 border-amber-500/40 text-amber-500 hover:bg-amber-500/25'
+                                : theme === 'dark' 
+                                  ? 'bg-slate-750 border-slate-600 text-slate-400 hover:text-amber-400 hover:border-amber-500/40' 
+                                  : 'bg-slate-100 border-slate-300 text-slate-400 hover:text-amber-500 hover:border-amber-400'
+                            }`}
+                            title={isFav ? 'Убрать из избранного' : 'Добавить в избранное'}
+                          >
+                            <Star className={`w-3.5 h-3.5 ${isFav ? 'fill-amber-400 text-amber-400' : ''}`} />
+                          </button>
+                          )}
+
+                          {/* INSERT BUTTON */}
+                          <button
+                            onClick={() => {
+                              onInsertSnippet(snippet.sql, false);
+                              onClose();
+                            }}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-xs transition-all"
+                            title="Добавить данный блок в конец редактора SQL"
+                          >
+                            <CornerDownRight className="w-3.5 h-3.5" />
+                            <span>Вставить</span>
+                          </button>
+
+                          {/* REPLACE BUTTON */}
+                          <button
+                            onClick={() => {
+                              onInsertSnippet(snippet.sql, true);
+                              onClose();
+                            }}
+                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border transition-all ${
+                              theme === 'dark' 
+                                ? 'bg-slate-700/80 hover:bg-slate-700 text-slate-200 border-slate-600' 
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+                            }`}
+                            title="Заменить весь текущий текст SQL данным сниппетом"
+                          >
+                            <Play className="w-3 h-3 text-emerald-500" />
+                            <span>Заменить</span>
+                          </button>
+
+                          {/* COPY BUTTON */}
+                          <button
+                            onClick={(e) => handleCopyCode(snippet.id, snippet.sql, e)}
+                            className={`p-1.5 rounded-md border transition-all ${
+                              theme === 'dark' 
+                                ? 'bg-slate-750 border-slate-600 text-slate-300 hover:text-white' 
+                                : 'bg-slate-100 border-slate-300 text-slate-600 hover:text-slate-900'
+                            }`}
+                            title="Скопировать SQL код"
+                          >
+                            {copiedId === snippet.id ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+
+                          {snippet.isCustom && (
+                            <>
+                              <button
+                                onClick={(e) => handleEditSnippet(snippet, e)}
+                                className={`p-1.5 rounded-md border transition-all ${
+                                  theme === 'dark' 
+                                    ? 'bg-slate-750 border-slate-600 text-slate-300 hover:text-blue-400' 
+                                    : 'bg-slate-100 border-slate-300 text-slate-600 hover:text-blue-600'
+                                }`}
+                                title="Редактировать сниппет"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteSnippet(snippet.id, e)}
+                                className={`p-1.5 rounded-md border transition-all ${
+                                  theme === 'dark' 
+                                    ? 'bg-slate-750 border-slate-600 text-slate-300 hover:text-red-400' 
+                                    : 'bg-slate-100 border-slate-300 text-slate-600 hover:text-red-600'
+                                }`}
+                                title="Удалить сниппет"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
 
-                      {/* BUTTONS: INSERT, REPLACE, COPY, EDIT, DELETE */}
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {/* INSERT BUTTON */}
-                        <button
-                          onClick={() => {
-                            onInsertSnippet(snippet.sql, false);
-                            onClose();
-                          }}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-xs transition-all"
-                          title="Добавить данный блок в конец редактора SQL"
-                        >
-                          <CornerDownRight className="w-3.5 h-3.5" />
-                          <span>Вставить</span>
-                        </button>
-
-                        {/* REPLACE BUTTON */}
-                        <button
-                          onClick={() => {
-                            onInsertSnippet(snippet.sql, true);
-                            onClose();
-                          }}
-                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border transition-all ${
-                            theme === 'dark' 
-                              ? 'bg-slate-700/80 hover:bg-slate-700 text-slate-200 border-slate-600' 
-                              : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
-                          }`}
-                          title="Заменить весь текущий текст SQL данным сниппетом"
-                        >
-                          <Play className="w-3 h-3 text-emerald-500" />
-                          <span>Заменить</span>
-                        </button>
-
-                        {/* COPY BUTTON */}
-                        <button
-                          onClick={(e) => handleCopyCode(snippet.id, snippet.sql, e)}
-                          className={`p-1.5 rounded-md border transition-all ${
-                            theme === 'dark' 
-                              ? 'bg-slate-750 border-slate-600 text-slate-300 hover:text-white' 
-                              : 'bg-slate-100 border-slate-300 text-slate-600 hover:text-slate-900'
-                          }`}
-                          title="Скопировать SQL код"
-                        >
-                          {copiedId === snippet.id ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                        </button>
-
-                        {snippet.isCustom && (
-                          <>
-                            <button
-                              onClick={(e) => handleEditSnippet(snippet, e)}
-                              className={`p-1.5 rounded-md border transition-all ${
-                                theme === 'dark' 
-                                  ? 'bg-slate-750 border-slate-600 text-slate-300 hover:text-blue-400' 
-                                  : 'bg-slate-100 border-slate-300 text-slate-600 hover:text-blue-600'
-                              }`}
-                              title="Редактировать сниппет"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={(e) => handleDeleteSnippet(snippet.id, e)}
-                              className={`p-1.5 rounded-md border transition-all ${
-                                theme === 'dark' 
-                                  ? 'bg-slate-750 border-slate-600 text-slate-300 hover:text-red-400' 
-                                  : 'bg-slate-100 border-slate-300 text-slate-600 hover:text-red-600'
-                              }`}
-                              title="Удалить сниппет"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* CODE PREVIEW BLOCK WITH SYNTAX HIGHLIGHTING */}
+                      {/* CODE PREVIEW BLOCK WITH SYNTAX HIGHLIGHTING */}
                     <div className={`p-2.5 rounded-lg font-mono text-[11px] leading-relaxed overflow-x-auto max-h-40 ${
                       theme === 'dark' ? 'bg-slate-900/90 border border-slate-800' : 'bg-slate-100/90 border border-slate-200'
                     }`}>
@@ -1800,8 +1874,9 @@ export function SqlSnippetsManager({
                       />
                     </div>
                   </div>
-                ))
-              )}
+                );
+              })
+            )}
             </div>
 
           </div>

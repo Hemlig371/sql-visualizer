@@ -21,11 +21,15 @@ import {
   clearAllVersions 
 } from '../utils/versionHistory';
 
+import { UiVisibilitySettings } from './SettingsModal';
+
 interface VersionHistoryModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentSql: string;
+  onRestoreVersion?: (sql: string) => void;
   theme: 'dark' | 'light';
+  uiVisibility?: UiVisibilitySettings;
 }
 
 interface DiffLine {
@@ -87,7 +91,8 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
   onClose,
   currentSql,
   onRestoreVersion,
-  theme
+  theme,
+  uiVisibility
 }) => {
   const [versions, setVersions] = useState<SqlVersionItem[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<SqlVersionItem | null>(null);
@@ -183,7 +188,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-fadeIn">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 animate-fadeIn">
       <div 
         className={`w-full max-w-5xl h-[85vh] rounded-xl border shadow-2xl flex flex-col overflow-hidden transition-all ${
           theme === 'dark' 
@@ -211,6 +216,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {uiVisibility?.showHistoryExport !== false && (
             <button
               onClick={handleExportJson}
               disabled={versions.length === 0}
@@ -224,6 +230,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
               <Download className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-emerald-400' : 'text-emerald-700'}`} />
               <span>Экспорт</span>
             </button>
+            )}
 
             <button
               onClick={onClose}
@@ -243,9 +250,11 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
             theme === 'dark' ? 'bg-slate-850/60 border-slate-700' : 'bg-white border-slate-300'
           }`}>
             {/* ACTIONS & SEARCH */}
+            {(uiVisibility?.showHistoryManualSnapshot !== false || uiVisibility?.showHistorySearch !== false) && (
             <div className={`p-3 border-b space-y-2 ${
               theme === 'dark' ? 'border-slate-700/50' : 'border-slate-200'
             }`}>
+              {uiVisibility?.showHistoryManualSnapshot !== false && (
               <div className="flex items-center gap-2">
                 <input
                   type="text"
@@ -266,7 +275,9 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                   <span>Снимок</span>
                 </button>
               </div>
+              )}
 
+              {uiVisibility?.showHistorySearch !== false && (
               <div className="relative">
                 <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
                 <input
@@ -281,7 +292,9 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                   }`}
                 />
               </div>
+              )}
             </div>
+            )}
 
             {/* LIST */}
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
@@ -299,7 +312,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                     <div
                       key={ver.id}
                       onClick={() => setSelectedVersion(ver)}
-                      className={`p-2.5 rounded-lg border text-xs cursor-pointer transition-all relative group ${
+                      className={`p-2.5 pr-9 rounded-lg border text-xs cursor-pointer transition-all relative group ${
                         isSelected
                           ? theme === 'dark'
                             ? 'border-blue-500 bg-blue-500/10 shadow-xs'
@@ -309,10 +322,10 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                           : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-1.5 truncate max-w-[200px]">
+                      <div className="flex items-center justify-between gap-1.5 mb-1">
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
                           <span className={`w-2 h-2 rounded-full shrink-0 ${ver.isAutoSave ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-                          <span className={`truncate ${theme === 'dark' ? 'text-slate-100' : 'text-slate-800'}`}>
+                          <span className={`truncate font-medium ${theme === 'dark' ? 'text-slate-100' : 'text-slate-800'}`}>
                             {ver.label}
                           </span>
                         </div>
@@ -336,7 +349,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                       {/* DELETE BUTTON */}
                       <button
                         onClick={(e) => handleDeleteVersion(ver.id, e)}
-                        className="absolute right-2 top-2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-slate-400 hover:text-red-500 transition-all"
+                        className="absolute right-1.5 top-2 p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-slate-400 hover:text-red-500 transition-all z-10"
                         title="Удалить запись"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -353,15 +366,6 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                 theme === 'dark' ? 'border-slate-700/50 text-slate-400' : 'border-slate-200 text-slate-600'
               }`}>
                 <span>Записей: {versions.length}</span>
-                <button
-                  onClick={handleClearAll}
-                  className={`hover:underline flex items-center gap-1 transition-colors ${
-                    theme === 'dark' ? 'text-red-400' : 'text-red-600'
-                  }`}
-                >
-                  <Trash2 className="w-3 h-3" />
-                  <span>Очистить</span>
-                </button>
               </div>
             )}
           </div>
@@ -376,19 +380,10 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                   theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-slate-200/70 border-slate-300'
                 }`}>
                   <div className="flex items-center gap-3">
-                    <span className={`text-xs ${
-                      theme === 'dark' ? 'text-blue-400' : 'text-blue-700'
-                    }`}>
-                      {selectedVersion.label}
-                    </span>
-                    <span className={`text-[11px] font-mono ${
-                      theme === 'dark' ? 'text-slate-400' : 'text-slate-600'
-                    }`}>
-                      {selectedVersion.formattedTime} ({selectedVersion.charCount} симв., {selectedVersion.lineCount} строк)
-                    </span>
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {uiVisibility?.showHistoryDiff !== false && (
                     <button
                       onClick={() => setShowDiff(!showDiff)}
                       className={`px-2.5 py-1 text-xs rounded border flex items-center gap-1.5 transition-colors ${
@@ -403,6 +398,7 @@ export const VersionHistoryModal: React.FC<VersionHistoryModalProps> = ({
                       <ArrowLeftRight className="w-3.5 h-3.5" />
                       <span>{showDiff ? 'Код версии' : 'Сравнить (Diff)'}</span>
                     </button>
+                    )}
 
                     <button
                       onClick={() => handleRestore(selectedVersion)}

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   ReactFlow, 
   Background, 
@@ -21,6 +21,7 @@ import {
   Copy, 
   Check, 
   X, 
+  Plus,
   HelpCircle, 
   Layout, 
   Layers, 
@@ -42,6 +43,8 @@ import {
   Loader2,
   ChevronDown,
   WrapText,
+  AlignLeft,
+  Search,
   FolderOpen,
   FileDown,
   FileJson,
@@ -55,44 +58,214 @@ import { nodeTypes } from './components/CustomNodes';
 import { sqlPresets, SQLPreset } from './components/SQLPresets';
 import { SqlSnippetsManager } from './components/SqlSnippetsManager';
 import { SqlEditor, highlightSqlHtml } from './components/SqlEditor';
-import { SettingsModal, getSavedHotkeys } from './components/SettingsModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { SettingsModal, getSavedHotkeys, getSavedFormatterSettings, FormatterSettings, getSavedUiVisibilitySettings, UiVisibilitySettings } from './components/SettingsModal';
 import { VersionHistoryModal } from './components/VersionHistoryModal';
 import { saveVersion } from './utils/versionHistory';
+import { format as formatSql } from 'sql-formatter';
+
+export interface EditorTab {
+  id: string;
+  title: string;
+  sql: string;
+}
+
+const SESSION_STORAGE_KEY = 'sql_visualizer_session_v2';
+
+interface SavedSession {
+  tabs?: EditorTab[];
+  activeTabId?: string;
+  sql?: string;
+  dialect?: 'PostgreSQL' | 'Oracle' | 'Clickhouse';
+  direction?: 'LR' | 'TB';
+  theme?: 'dark' | 'light';
+  isWrapSql?: boolean;
+}
+
+const getSavedSession = (): SavedSession | null => {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (raw) {
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.error('Failed to parse session from localStorage', e);
+  }
+  return null;
+};
 
 export default function App() {
-  const [theme, setTheme] = useState<'dark' | 'light'>('light');
-  const [sql, setSql] = useState<string>(sqlPresets[0].sql);
-  const [dialect, setDialect] = useState<'PostgreSQL' | 'Oracle' | 'Clickhouse'>('PostgreSQL');
-  const [direction, setDirection] = useState<'LR' | 'TB'>('LR');
+  const savedSession = useMemo(() => getSavedSession(), []);
+
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => savedSession?.theme || 'dark');
+  const [dialect, setDialect] = useState<'PostgreSQL' | 'Oracle' | 'Clickhouse'>(() => savedSession?.dialect || 'PostgreSQL');
+  const [direction, setDirection] = useState<'LR' | 'TB'>(() => savedSession?.direction || 'LR');
   const [activePresetId, setActivePresetId] = useState<string>(sqlPresets[0].id);
   const [showSortNodes, setShowSortNodes] = useState<boolean>(false);
   const [showLimitNodes, setShowLimitNodes] = useState<boolean>(false);
-  const [isWrapSql, setIsWrapSql] = useState<boolean>(false);
-  const [isMaximizedSql, setIsMaximizedSql] = useState<boolean>(false);
+  const [isWrapSql, setIsWrapSql] = useState<boolean>(() => savedSession?.isWrapSql ?? false);
+  const [isMaximizedSql, setIsMaximizedSql] = useState<boolean>(true);
   const [showSnippetsModal, setShowSnippetsModal] = useState<boolean>(false);
   const [showPresetsDropdown, setShowPresetsDropdown] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
   const [lineageHighlightMode, setLineageHighlightMode] = useState<boolean>(false);
   const [hotkeys, setHotkeys] = useState<Record<string, string>>(() => getSavedHotkeys());
+  const [formatterSettings, setFormatterSettings] = useState<FormatterSettings>(() => getSavedFormatterSettings());
+  const [uiVisibility, setUiVisibility] = useState<UiVisibilitySettings>(() => getSavedUiVisibilitySettings());
+  const formatterSettingsRef = useRef<FormatterSettings>(formatterSettings);
+  useEffect(() => {
+    formatterSettingsRef.current = formatterSettings;
+  }, [formatterSettings]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedSqlRef = useRef<string>('');
 
-  // 30-minute auto-save interval into IndexedDB
-  useEffect(() => {
-    const AUTO_SAVE_MS = 30 * 60 * 1000;
-    const timer = setInterval(() => {
-      if (sql.trim() && sql !== lastSavedSqlRef.current) {
-        saveVersion(sql, dialect, 'Автосохранение (30 мин)', true)
-          .then(() => {
-            lastSavedSqlRef.current = sql;
-          })
-          .catch((err) => console.warn('Auto-save error:', err));
-      }
-    }, AUTO_SAVE_MS);
+  // Tabs state for fullscreen editor
+  const [tabs, setTabs] = useState<EditorTab[]>(() => {
+    if (savedSession?.tabs && savedSession.tabs.length > 0) {
+      return savedSession.tabs;
+    }
+    return [{ id: '1', title: 'Вкладка 1', sql: sqlPresets[0].sql }];
+  });
+  const [activeTabId, setActiveTabId] = useState<string>(() => {
+    if (savedSession?.activeTabId && savedSession?.tabs?.some(t => t.id === savedSession.activeTabId)) {
+      return savedSession.activeTabId;
+    }
+    return savedSession?.tabs?.[0]?.id || '1';
+  });
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
 
-    return () => clearInterval(timer);
-  }, [sql, dialect]);
+  const [sql, setSql] = useState<string>(() => {
+    if (savedSession?.sql) {
+      return savedSession.sql;
+    }
+    const initialTab = (savedSession?.tabs || []).find(t => t.id === (savedSession?.activeTabId || '1'));
+    return initialTab ? initialTab.sql : sqlPresets[0].sql;
+  });
+
+  // Keep latest session state in ref to avoid constant disk writes while editing
+  const latestSessionRef = useRef({
+    tabs,
+    activeTabId,
+    sql,
+    dialect,
+    direction,
+    theme,
+    isWrapSql
+  });
+
+  useEffect(() => {
+    latestSessionRef.current = {
+      tabs: tabs.map(t => t.id === activeTabId ? { ...t, sql } : t),
+      activeTabId,
+      sql,
+      dialect,
+      direction,
+      theme,
+      isWrapSql
+    };
+  }, [tabs, activeTabId, sql, dialect, direction, theme, isWrapSql]);
+
+  const saveSessionToStorage = useCallback(() => {
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(latestSessionRef.current));
+    } catch (e) {
+      console.error('Failed to save session to localStorage', e);
+    }
+  }, []);
+
+  // Save session state ONLY on window close/unload, visibility hide, or every 20 minutes
+  useEffect(() => {
+    const handleUnload = () => {
+      saveSessionToStorage();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        saveSessionToStorage();
+      }
+    };
+
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('unload', handleUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Background interval: save session once every 20 minutes (20 * 60 * 1000 ms)
+    const INTERVAL_20_MIN = 20 * 60 * 1000;
+    const intervalId = setInterval(() => {
+      saveSessionToStorage();
+    }, INTERVAL_20_MIN);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('unload', handleUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(intervalId);
+    };
+  }, [saveSessionToStorage]);
+
+  // Sync current active tab's SQL whenever sql state changes
+  useEffect(() => {
+    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, sql } : t));
+  }, [sql, activeTabId]);
+
+  const handleSelectTab = (targetId: string) => {
+    if (targetId === activeTabId) return;
+    const targetTab = tabs.find(t => t.id === targetId);
+    if (!targetTab) return;
+    setActiveTabId(targetId);
+    setSql(targetTab.sql);
+  };
+
+  const handleAddTab = () => {
+    const newId = Date.now().toString();
+    const nextNum = tabs.length + 1;
+    const newTab: EditorTab = {
+      id: newId,
+      title: `Вкладка ${nextNum}`,
+      sql: ''
+    };
+    setTabs(prev => [...prev, newTab]);
+    setActiveTabId(newId);
+    setSql(newTab.sql);
+  };
+
+  const handleCloseTab = (e: React.MouseEvent, idToClose: string) => {
+    e.stopPropagation();
+    if (tabs.length <= 1) return;
+
+    const nextTabs = tabs.filter(t => t.id !== idToClose);
+    if (activeTabId === idToClose) {
+      const closedIndex = tabs.findIndex(t => t.id === idToClose);
+      const nextActive = nextTabs[Math.max(0, closedIndex - 1)];
+      setActiveTabId(nextActive.id);
+      setSql(nextActive.sql);
+    }
+    setTabs(nextTabs);
+  };
+
+  const handleRenameTab = (id: string, newTitle: string) => {
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, title: newTitle } : t));
+  };
+
+  const sqlRef = useRef(sql);
+  useEffect(() => {
+    sqlRef.current = sql;
+  }, [sql]);
+
+  // Debounced auto-save version into IndexedDB (500ms after user stops typing)
+  useEffect(() => {
+    if (!sql.trim() || sql === lastSavedSqlRef.current) return;
+    const timer = setTimeout(() => {
+      saveVersion(sql, 'Автосохранение', true)
+        .then(() => {
+          lastSavedSqlRef.current = sql;
+        })
+        .catch((err) => console.warn('Auto-save error:', err));
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [sql]);
 
   const handleOpenFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -132,6 +305,7 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (e.defaultPrevented) return;
         setIsMaximizedSql(false);
       }
     };
@@ -724,7 +898,7 @@ export default function App() {
       if (e.altKey) parts.push('Alt');
       if (e.shiftKey) parts.push('Shift');
 
-      let keyName = e.key.toUpperCase();
+      let keyName = e.key ? e.key.toUpperCase() : '';
       if (e.code && e.code.startsWith('Key')) {
         keyName = e.code.slice(3).toUpperCase();
       } else if (e.code && e.code.startsWith('Digit')) {
@@ -759,6 +933,10 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         setIsWrapSql((prev) => !prev);
+      } else if (combo === (hotkeys.formatSql || 'Ctrl+Shift+F')) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleFormatSql();
       } else if (combo === (hotkeys.openSnippets || 'Ctrl+K')) {
         e.preventDefault();
         e.stopPropagation();
@@ -784,11 +962,13 @@ export default function App() {
 
     window.addEventListener('keydown', handleGlobalKeyDown, true);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown, true);
-  }, [hotkeys, sql, dialect, direction]);
+  }, [hotkeys, sql, dialect, direction, formatterSettings]);
+
+  const debounceTimerRef = useRef<any>(null);
 
   // Initial load
   useEffect(() => {
-    handleVisualize(sqlPresets[0].sql, 'PostgreSQL', 'LR', true, true);
+    handleVisualize(sqlPresets[0].sql, 'PostgreSQL', 'LR');
   }, []);
 
   const handleVisualize = (
@@ -796,6 +976,11 @@ export default function App() {
     currentDialect = dialect,
     currentDir = direction
   ) => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
     if (!queryText.trim()) {
       setError(null);
       setAstResult(null);
@@ -892,6 +1077,63 @@ export default function App() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleFormatSql = () => {
+    const currentSqlText = sqlRef.current || sql;
+    if (!currentSqlText.trim()) return;
+
+    const cfg = formatterSettingsRef.current || formatterSettings;
+
+    const primaryLang =
+      dialect === 'PostgreSQL' ? 'postgresql' :
+      dialect === 'MySQL' ? 'mysql' :
+      dialect === 'SQLite' ? 'sqlite' : 'sql';
+
+    const fallbackLangs = [primaryLang, 'mysql', 'sqlite', 'sql'].filter(
+      (lang, index, self) => self.indexOf(lang) === index
+    );
+
+    for (const lang of fallbackLangs) {
+      try {
+        let formatted = formatSql(currentSqlText, {
+          language: lang as any,
+          keywordCase: cfg.keywordCase,
+          tabWidth: cfg.tabWidth,
+          useTabs: cfg.useTabs,
+          expressionWidth: cfg.expressionWidth,
+          denseOperators: cfg.denseOperators,
+        });
+
+        // Apply compact column formatting if expressionWidth is set to compact threshold (e.g. >= 80)
+        if (cfg.expressionWidth >= 80) {
+          formatted = formatted.replace(
+            /(SELECT|GROUP BY|ORDER BY|INSERT INTO|VALUES)\s+([\s\S]+?)(?=\n\s*(?:FROM|WHERE|GROUP BY|ORDER BY|HAVING|LIMIT|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|UNION|RETURNING|WINDOW|SET|VALUES|;|$))/gi,
+            (match, keyword, items) => {
+              if (items.includes('--') || items.includes('/*') || /\bSELECT\b/i.test(items)) {
+                return match;
+              }
+              const cleanItems = items
+                .split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .join(' ');
+
+              const candidate = keyword + ' ' + cleanItems;
+              if (candidate.length <= cfg.expressionWidth) {
+                return candidate;
+              }
+              return match;
+            }
+          );
+        }
+
+        setSql(formatted);
+        return;
+      } catch {
+        // Try next fallback dialect
+      }
+    }
+  };
+
   const handleNodeClick = (_event: any, node: any) => {
     setSelectedNode(node);
   };
@@ -902,9 +1144,9 @@ export default function App() {
       {/* CORE WORKSPACE */}
       <main className="flex flex-1 overflow-hidden relative">
         
-        {/* LEFT PANEL: INPUT & CONFIG (30% WIDTH) */}
+        {/* LEFT PANEL: INPUT & CONFIG (40% WIDTH) */}
         {showLeftPanel && (
-        <aside id="control-panel" className={`w-[30%] min-w-[340px] max-w-[480px] border-r flex flex-col p-4 space-y-4 shrink-0 transition-colors ${
+        <aside id="control-panel" className={`w-[40%] min-w-[380px] max-w-[580px] border-r flex flex-col p-4 space-y-4 shrink-0 transition-colors ${
           theme === 'dark' ? 'bg-slate-750/50 border-slate-600' : 'bg-slate-300/80 border-slate-400/60'
         }`}>
           
@@ -923,6 +1165,7 @@ export default function App() {
                 />
 
                 {/* OPEN FILE BUTTON */}
+                {uiVisibility.showOpenFile && (
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold transition-colors ${
@@ -935,8 +1178,10 @@ export default function App() {
                   <FolderOpen className="w-3 h-3 text-amber-500" />
                   <span>Открыть</span>
                 </button>
+                )}
 
                 {/* SAVE FILE BUTTON */}
+                {uiVisibility.showSaveFile && (
                 <button
                   onClick={handleSaveSqlFile}
                   className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold transition-colors ${
@@ -949,7 +1194,9 @@ export default function App() {
                   <FileDown className="w-3 h-3 text-emerald-500" />
                   <span>Сохранить</span>
                 </button>
+                )}
 
+                {uiVisibility.showSnippets && (
                 <button
                   onClick={() => setShowSnippetsModal(true)}
                   className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold transition-colors ${
@@ -962,7 +1209,9 @@ export default function App() {
                   <Layers className="w-3 h-3 text-blue-500" />
                   <span>Сниппеты</span>
                 </button>
+                )}
 
+                {uiVisibility.showMaximizeButton && (
                 <button
                   onClick={() => setIsMaximizedSql(true)}
                   className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold transition-colors ${
@@ -975,21 +1224,24 @@ export default function App() {
                   <Maximize2 className="w-3 h-3" />
                   <span>Развернуть</span>
                 </button>
+                )}
               </div>
             </div>
 
             {/* SYNTAX HIGHLIGHTED SQL EDITOR */}
-            <SqlEditor
-              value={sql}
-              onChange={setSql}
-              isWrapSql={isWrapSql}
-              theme={theme}
-            />
+            <ErrorBoundary title="Ошибка редактора SQL" theme={theme}>
+              <SqlEditor
+                value={sql}
+                onChange={setSql}
+                isWrapSql={isWrapSql}
+                theme={theme}
+              />
+            </ErrorBoundary>
 
             {/* SYNTAX ERROR LOG PANEL */}
             {error && (
-              <div className={`p-3 border rounded-md shadow-lg absolute bottom-1.5 left-1.5 right-1.5 max-h-40 overflow-y-auto backdrop-blur-md transition-all ${
-                theme === 'dark' ? 'bg-red-950/80 border-red-500/30 text-slate-200' : 'bg-red-50/95 border-red-200 text-red-900 shadow-md'
+              <div className={`p-3 border rounded-md shadow-lg absolute bottom-1.5 left-1.5 right-1.5 max-h-40 overflow-y-auto transition-all ${
+                theme === 'dark' ? 'bg-red-950/95 border-red-500/40 text-slate-200' : 'bg-red-50 border-red-200 text-red-900 shadow-md'
               }`}>
                 <div className="flex items-start gap-2">
                   <X className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
@@ -1007,6 +1259,7 @@ export default function App() {
           {/* VISUALIZE ACTION BAR */}
           <div className="flex items-center gap-1.5 relative">
             {/* PRESETS BUTTON & POPOVER */}
+            {uiVisibility.showPresets && (
             <div className="relative">
               <button
                 onClick={() => setShowPresetsDropdown(!showPresetsDropdown)}
@@ -1029,8 +1282,8 @@ export default function App() {
                     className="fixed inset-0 z-30" 
                     onClick={() => setShowPresetsDropdown(false)} 
                   />
-                  <div className={`absolute bottom-full mb-1.5 left-0 z-40 rounded-lg border shadow-xl p-2 w-72 backdrop-blur-md animate-in fade-in duration-150 ${
-                    theme === 'dark' ? 'bg-slate-800/95 border-slate-600 text-slate-200' : 'bg-white/95 border-slate-300 text-slate-800'
+                  <div className={`absolute bottom-full mb-1.5 left-0 z-40 rounded-lg border shadow-xl p-2 w-72 animate-in fade-in duration-150 ${
+                    theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-200' : 'bg-white border-slate-300 text-slate-800'
                   }`}>
                     <div className="flex items-center justify-between pb-1.5 border-b border-slate-600/40 mb-1.5">
                       <span className="text-[10px] uppercase font-bold text-slate-400">Готовые SQL пресеты</span>
@@ -1073,14 +1326,15 @@ export default function App() {
                 </>
               )}
             </div>
+            )}
 
             {/* WRAP TEXT BUTTON */}
             <button
               onClick={() => setIsWrapSql(!isWrapSql)}
-              className={`flex items-center gap-1 text-[10px] px-1.5 py-1.5 rounded-md transition-colors shrink-0 ${
+              className={`flex items-center gap-1 text-[10px] px-2.5 py-1 rounded font-mono transition-all shrink-0 ${
                 isWrapSql
-                  ? 'bg-blue-600/30 text-blue-300 border border-blue-500/40 font-medium'
-                  : theme === 'dark' ? 'text-slate-400 hover:text-slate-200 border border-transparent' : 'text-slate-600 hover:text-slate-900 border border-transparent'
+                  ? 'bg-blue-600 text-white font-bold'
+                  : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
               }`}
               title="Перенос строки"
             >
@@ -1088,7 +1342,22 @@ export default function App() {
               <span>Перенос</span>
             </button>
 
+            {/* FORMAT SQL BUTTON */}
+            {uiVisibility.showFormatSql && (
+            <button
+              onClick={handleFormatSql}
+              className={`flex items-center gap-1 text-[10px] px-2.5 py-1 rounded font-mono transition-all shrink-0 ${
+                theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+              }`}
+              title="Форматировать SQL (Ctrl+Shift+F)"
+            >
+              <AlignLeft className="w-3 h-3" />
+              <span>Формат</span>
+            </button>
+            )}
+
             {/* COPY SQL BUTTON */}
+            {uiVisibility.showCopySql && (
             <button
               onClick={handleCopySql}
               className={`flex items-center gap-1 text-[10px] px-1.5 py-1.5 transition-colors shrink-0 ${theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-600 hover:text-slate-900'}`}
@@ -1106,6 +1375,7 @@ export default function App() {
                 </>
               )}
             </button>
+            )}
 
             <button
               onClick={() => handleVisualize()}
@@ -1128,75 +1398,89 @@ export default function App() {
             theme === 'dark' ? 'bg-slate-750 border-slate-600 text-slate-200' : 'bg-slate-300/80 border-slate-400/60 text-slate-800'
           }`}>
             <div className="flex items-center gap-3 text-xs">
-              <div className="flex items-center gap-1.5 font-medium">
-                <Layout className="w-3.5 h-3.5 text-blue-500" />
-                <span className={theme === 'dark' ? 'text-slate-100' : 'text-slate-800 font-semibold'}>Layout:</span>
-              </div>
-              <div className={`flex p-0.5 rounded-md border ${
-                theme === 'dark' ? 'bg-slate-850 border-slate-600' : 'bg-slate-100 border-slate-300 shadow-sm'
-              }`}>
-                <button
-                  onClick={() => handleDirectionChange('LR')}
-                  className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
-                    direction === 'LR' 
-                      ? 'bg-blue-600 text-white font-bold' 
-                      : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
-                  }`}
-                >
-                  Left-Right
-                </button>
-                <button
-                  onClick={() => handleDirectionChange('TB')}
-                  className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
-                    direction === 'TB' 
-                      ? 'bg-blue-600 text-white font-bold' 
-                      : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
-                  }`}
-                >
-                  Top-Bottom
-                </button>
-              </div>
+              {uiVisibility.showLayoutDirection && (
+              <>
+                <div className="flex items-center gap-1.5 font-medium">
+                  <Layout className="w-3.5 h-3.5 text-blue-500" />
+                  <span className={theme === 'dark' ? 'text-slate-100' : 'text-slate-800 font-semibold'}>Layout:</span>
+                </div>
+                <div className={`flex p-0.5 rounded-md border ${
+                  theme === 'dark' ? 'bg-slate-850 border-slate-600' : 'bg-slate-100 border-slate-300 shadow-sm'
+                }`}>
+                  <button
+                    onClick={() => handleDirectionChange('LR')}
+                    className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
+                      direction === 'LR' 
+                        ? 'bg-blue-600 text-white font-bold' 
+                        : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                    }`}
+                  >
+                    Left-Right
+                  </button>
+                  <button
+                    onClick={() => handleDirectionChange('TB')}
+                    className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
+                      direction === 'TB' 
+                        ? 'bg-blue-600 text-white font-bold' 
+                        : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                    }`}
+                  >
+                    Top-Bottom
+                  </button>
+                </div>
+              </>
+              )}
 
-              <div className={`h-4 w-px ${theme === 'dark' ? 'bg-slate-600' : 'bg-slate-300'}`} />
+              {(uiVisibility.showSortLimitToggle || uiVisibility.showLineageFocus) && (
+              <>
+                <div className={`h-4 w-px ${theme === 'dark' ? 'bg-slate-600' : 'bg-slate-300'}`} />
 
-              <div className={`flex p-0.5 rounded-md border ${
-                theme === 'dark' ? 'bg-slate-850 border-slate-600' : 'bg-slate-100 border-slate-300 shadow-sm'
-              }`}>
-                <button
-                  onClick={handleSortToggle}
-                  className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
-                    showSortNodes 
-                      ? 'bg-emerald-600 text-white font-bold' 
-                      : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
-                  }`}
-                  title="Toggle visualization of ORDER BY (Sort) nodes"
-                >
-                  Sort Nodes
-                </button>
-                <button
-                  onClick={handleLimitToggle}
-                  className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
-                    showLimitNodes 
-                      ? 'bg-emerald-600 text-white font-bold' 
-                      : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
-                  }`}
-                  title="Toggle visualization of LIMIT / OFFSET nodes"
-                >
-                  Limit Nodes
-                </button>
-                <button
-                  onClick={() => setLineageHighlightMode(!lineageHighlightMode)}
-                  className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all flex items-center gap-1 ${
-                    lineageHighlightMode 
-                      ? 'bg-purple-600 text-white font-bold shadow-xs' 
-                      : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
-                  }`}
-                  title="Подсветка взаимосвязей (Data Lineage) выделенного узла"
-                >
-                  <Workflow className="w-3 h-3" />
-                  <span>Lineage Focus</span>
-                </button>
-              </div>
+                <div className={`flex p-0.5 rounded-md border ${
+                  theme === 'dark' ? 'bg-slate-850 border-slate-600' : 'bg-slate-100 border-slate-300 shadow-sm'
+                }`}>
+                  {uiVisibility.showSortLimitToggle && (
+                  <>
+                    <button
+                      onClick={handleSortToggle}
+                      className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
+                        showSortNodes 
+                          ? 'bg-emerald-600 text-white font-bold' 
+                          : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                      }`}
+                      title="Toggle visualization of ORDER BY (Sort) nodes"
+                    >
+                      Sort Nodes
+                    </button>
+                    <button
+                      onClick={handleLimitToggle}
+                      className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all ${
+                        showLimitNodes 
+                          ? 'bg-emerald-600 text-white font-bold' 
+                          : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                      }`}
+                      title="Toggle visualization of LIMIT / OFFSET nodes"
+                    >
+                      Limit Nodes
+                    </button>
+                  </>
+                  )}
+                  {uiVisibility.showLineageFocus && (
+                  <button
+                    onClick={() => setLineageHighlightMode(!lineageHighlightMode)}
+                    className={`px-2.5 py-1 rounded text-[10px] font-mono transition-all flex items-center gap-1 ${
+                      lineageHighlightMode 
+                        ? 'bg-purple-600 text-white font-bold shadow-xs' 
+                        : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                    }`}
+                    title="Подсветка взаимосвязей (Data Lineage) выделенного узла"
+                  >
+                    <Workflow className="w-3 h-3" />
+                    <span>Lineage Focus</span>
+                  </button>
+                  )}
+                </div>
+              </>
+              )}
             </div>
 
             {/* AST Preview toggle and Info labels */}
@@ -1213,6 +1497,7 @@ export default function App() {
                 {showLeftPanel ? <PanelLeftClose className="w-3.5 h-3.5" /> : <PanelLeftOpen className="w-3.5 h-3.5" />}
               </button>
 
+              {uiVisibility.showMiniMapButton && (
               <button
                 onClick={() => setShowMiniMap(!showMiniMap)}
                 className={`p-1.5 rounded-lg border transition-all ${
@@ -1224,7 +1509,9 @@ export default function App() {
               >
                 <Map className="w-3.5 h-3.5" />
               </button>
+              )}
 
+              {uiVisibility.showThemeToggle && (
               <button
                 onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
                 className={`p-1.5 rounded-lg border transition-all ${
@@ -1236,6 +1523,7 @@ export default function App() {
               >
                 {theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-blue-500" />}
               </button>
+              )}
 
               <button
                 onClick={() => setShowSettingsModal(true)}
@@ -1250,6 +1538,7 @@ export default function App() {
               </button>
 
               {/* EXPORT GRAPH DROPDOWN */}
+              {uiVisibility.showExportButton && (
               <div className="relative">
                 <button
                   onClick={() => setShowExportMenu(!showExportMenu)}
@@ -1397,13 +1686,15 @@ export default function App() {
                   </>
                 )}
               </div>
+              )}
                             
 
             </div>
           </div>
 
           {/* REACT FLOW CANVAS CONTAINER */}
-          <div className={`flex-1 w-full relative min-h-0 ${theme === 'dark' ? 'bg-slate-850' : 'bg-slate-200'}`}>
+          <div className={`flex-1 w-full relative min-h-0 ${theme === 'dark' ? 'bg-slate-850' : 'bg-slate-200'}`} style={{ willChange: 'transform', transform: 'translateZ(0)' }}>
+            <ErrorBoundary title="Ошибка отображения графа" theme={theme}>
             {/* Grid Pattern Background styled specifically to match the design style */}
             <div className={`absolute inset-0 pointer-events-none opacity-[0.07] dark:opacity-10`} style={{ backgroundImage: 'radial-gradient(#64748b 1px, transparent 1px)', backgroundSize: '24px 24px' }}></div>
             
@@ -1455,17 +1746,17 @@ export default function App() {
                 <div className={`w-12 h-12 rounded-full border flex items-center justify-center mb-3 ${theme === 'dark' ? 'border-slate-600 text-slate-300' : 'border-slate-300 text-slate-600 bg-slate-100 shadow-sm'}`}>
                   <Database className="w-6 h-6" />
                 </div>
-                <div className={`text-sm font-semibold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Песочница пуста</div>
                 <div className={`text-xs max-w-xs leading-normal ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
                   Введите SQL-запрос в редактор слева и нажмите <strong className={theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}>Visualize</strong> для построения интерактивного логического графа.
                 </div>
               </div>
             )}
+            </ErrorBoundary>
 
             {/* RAW AST OVERLAY SIDEBAR */}
             {showAstPreview && (
-              <div className={`absolute right-0 top-0 bottom-0 w-80 border-l z-20 flex flex-col shadow-2xl backdrop-blur-md animate-in slide-in-from-right duration-200 ${
-                theme === 'dark' ? 'bg-[#172033]/95 border-slate-600 text-slate-200' : 'bg-slate-100/95 border-slate-300 text-slate-800'
+              <div className={`absolute right-0 top-0 bottom-0 w-80 border-l z-20 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200 ${
+                theme === 'dark' ? 'bg-[#172033] border-slate-600 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
               }`}>
                 <div className={`flex items-center justify-between p-3 border-b ${
                   theme === 'dark' ? 'border-slate-600 bg-slate-850/40' : 'border-slate-200 bg-slate-50'
@@ -1501,7 +1792,7 @@ export default function App() {
           </div>
 
           {/* FLOATING SELECTED NODE DRAWER / BOTTOM DETAILS BAR */}
-          {selectedNode && (
+          {uiVisibility.showGraphFooter !== false && selectedNode && (
             <div className={`border-t p-4 shrink-0 shadow-2xl animate-in slide-in-from-bottom duration-200 ${
               theme === 'dark' ? 'bg-slate-750 border-slate-600 text-slate-200' : 'bg-white border-slate-300 text-slate-800'
             }`}>
@@ -1515,15 +1806,10 @@ export default function App() {
                       selectedNode.type === 'groupByNode' || selectedNode.type === 'havingNode' ? 'bg-pink-500' :
                       selectedNode.type === 'resultNode' ? 'bg-emerald-500' : 'bg-cyan-500'
                     }`} />
-                    <span className={`text-[10px] tracking-wider uppercase font-mono ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
-                      Logical Execution Node: {selectedNode.type}
-                    </span>
-                    <span className={`text-[10px] font-mono ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>ID: {selectedNode.id}</span>
+                    <h4 className={`text-sm font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>
+                      {selectedNode.data.title || selectedNode.data.label || 'Details'}
+                    </h4>
                   </div>
-                  
-                  <h4 className={`text-sm font-bold flex items-center gap-2 ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>
-                    {selectedNode.data.title || selectedNode.data.label || 'Details'}
-                  </h4>
 
                   {/* Dynamic description of execution */}
                   <div className="mt-2 text-xs leading-relaxed font-mono select-text">
@@ -1662,12 +1948,12 @@ export default function App() {
 
       {/* FULLSCREEN OVERLAY MODAL */}
       {isMaximizedSql && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs p-1.5 sm:p-2.5 flex flex-col items-center justify-center animate-in fade-in duration-150">
-          <div className={`w-full max-w-7xl h-full border rounded-xl flex flex-col shadow-2xl overflow-hidden transition-colors ${
-            theme === 'dark' ? 'bg-slate-850 border-slate-700 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-900'
+        <div className="fixed inset-0 z-50 bg-slate-950/80 p-0 flex flex-col items-center justify-center animate-in fade-in duration-150">
+          <div className={`w-full h-full flex flex-col overflow-hidden transition-colors ${
+            theme === 'dark' ? 'bg-slate-850 text-slate-200' : 'bg-slate-100 text-slate-900'
           }`}>
             {/* HEADER */}
-            <div className={`flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b shrink-0 ${
+            <div className={`flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b shrink-0 ${
               theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-200/90 border-slate-300'
             }`}>
               <div className="flex items-center gap-2.5">
@@ -1677,7 +1963,8 @@ export default function App() {
                 </h3>
               </div>
 
-              <div className="flex items-center gap-2 sm:gap-3">
+              <div className="flex items-center gap-2 sm:gap-3 ml-auto">
+                {uiVisibility.showOpenFile && (
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded font-semibold transition-colors ${
@@ -1690,7 +1977,9 @@ export default function App() {
                   <FolderOpen className="w-3.5 h-3.5 text-amber-500" />
                   <span>Открыть</span>
                 </button>
+                )}
 
+                {uiVisibility.showSaveFile && (
                 <button
                   onClick={handleSaveSqlFile}
                   className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded font-semibold transition-colors ${
@@ -1703,7 +1992,9 @@ export default function App() {
                   <FileDown className="w-3.5 h-3.5 text-emerald-500" />
                   <span>Сохранить</span>
                 </button>
+                )}
 
+                {uiVisibility.showSnippets && (
                 <button
                   onClick={() => setShowSnippetsModal(true)}
                   className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded font-semibold transition-colors ${
@@ -1716,7 +2007,9 @@ export default function App() {
                   <Layers className="w-3.5 h-3.5 text-blue-500" />
                   <span>Сниппеты</span>
                 </button>
+                )}
 
+                {uiVisibility.showHistory && (
                 <button
                   onClick={() => setShowHistoryModal(true)}
                   className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded font-semibold transition-colors ${
@@ -1729,56 +2022,112 @@ export default function App() {
                   <History className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
                   <span>История</span>
                 </button>
+                )}
 
-                <button
-                  onClick={() => setIsWrapSql(!isWrapSql)}
-                  className={`flex items-center gap-1 text-xs px-2 py-1 rounded font-medium transition-colors ${
-                    isWrapSql
-                      ? 'bg-blue-600/30 text-blue-300 border border-blue-500/40'
-                      : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-800 hover:text-slate-950'
-                  }`}
-                  title="Перенос строки"
-                >
-                  <WrapText className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Перенос строки</span>
-                </button>
+                {uiVisibility.showMaximizeButton && (
+                <>
+                  <div className="h-4 w-px bg-slate-400/40 dark:bg-slate-600" />
 
-                <button
-                  onClick={handleCopySql}
-                  className={`flex items-center gap-1 text-xs px-2 py-1 font-medium transition-colors ${
-                    theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-800 hover:text-slate-950'
-                  }`}
-                  title="Скопировать SQL"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy SQL'}</span>
-                </button>
-
-                <div className="h-4 w-px bg-slate-400/40 dark:bg-slate-600" />
-
-                <button
-                  onClick={() => setIsMaximizedSql(false)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold border transition-all ${
-                    theme === 'dark' 
-                      ? 'bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600' 
-                      : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 shadow-2xs'
-                  }`}
-                  title="Свернуть (Esc)"
-                >
-                  <Minimize2 className="w-3.5 h-3.5" />
-                  <span>Свернуть</span>
-                </button>
+                  <button
+                    onClick={() => setIsMaximizedSql(false)}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold border transition-all ${
+                      theme === 'dark' 
+                        ? 'bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600' 
+                        : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 shadow-2xs'
+                    }`}
+                    title="Свернуть (Esc)"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>Свернуть</span>
+                  </button>
+                </>
+                )}
               </div>
+            </div>
+
+            {/* TAB BAR (Fullscreen Only) */}
+            <div className={`flex items-center gap-1.5 px-3 pt-2 border-b overflow-x-auto shrink-0 select-none ${
+              theme === 'dark' ? 'bg-slate-800/90 border-slate-700' : 'bg-slate-200/60 border-slate-300'
+            }`}>
+              {tabs.map((tab) => {
+                const isActive = tab.id === activeTabId;
+                return (
+                  <div
+                    key={tab.id}
+                    onClick={() => handleSelectTab(tab.id)}
+                    className={`group flex items-center gap-2 px-3 py-1.5 rounded-t-lg border-t border-x cursor-pointer text-xs font-medium transition-all max-w-[200px] shrink-0 ${
+                      isActive
+                        ? theme === 'dark'
+                          ? 'bg-slate-850 border-slate-700 text-blue-400 font-semibold shadow-2xs'
+                          : 'bg-white border-slate-300 text-blue-600 font-semibold shadow-2xs'
+                        : theme === 'dark'
+                          ? 'bg-slate-800/40 border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-750'
+                          : 'bg-slate-200/40 border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-200/80'
+                    }`}
+                  >
+                    <FileText className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                    {editingTabId === tab.id ? (
+                      <input
+                        type="text"
+                        value={tab.title}
+                        onChange={(e) => handleRenameTab(tab.id, e.target.value)}
+                        onBlur={() => setEditingTabId(null)}
+                        onKeyDown={(e) => e.key === 'Enter' && setEditingTabId(null)}
+                        autoFocus
+                        className="bg-transparent outline-none w-full border-b border-blue-500 text-xs px-0.5"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <span
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          setEditingTabId(tab.id);
+                        }}
+                        className="truncate flex-1"
+                        title="Двойной клик для переименования"
+                      >
+                        {tab.title}
+                      </span>
+                    )}
+
+                    {tabs.length > 1 && (
+                      <button
+                        onClick={(e) => handleCloseTab(e, tab.id)}
+                        className={`p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity ${
+                          theme === 'dark' ? 'hover:bg-slate-700 text-slate-400 hover:text-slate-200' : 'hover:bg-slate-200 text-slate-500 hover:text-slate-800'
+                        }`}
+                        title="Закрыть вкладку"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+
+              <button
+                onClick={handleAddTab}
+                className={`p-1.5 rounded-md mb-1 text-xs transition-colors shrink-0 ${
+                  theme === 'dark'
+                    ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-750'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-300/80'
+                }`}
+                title="Новая вкладка"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
 
             {/* BODY */}
             <div className="flex-1 p-3.5 flex flex-col min-h-0 relative">
-              <SqlEditor
-                value={sql}
-                onChange={setSql}
-                isWrapSql={isWrapSql}
-                theme={theme}
-              />
+              <ErrorBoundary title="Ошибка редактора SQL" theme={theme}>
+                <SqlEditor
+                  value={sql}
+                  onChange={setSql}
+                  isWrapSql={isWrapSql}
+                  theme={theme}
+                />
+              </ErrorBoundary>
             </div>
 
             {/* FOOTER */}
@@ -1787,6 +2136,7 @@ export default function App() {
             }`}>
               <div className="flex items-center gap-3">
                 {/* PRESETS BUTTON & POPOVER IN FOOTER */}
+                {uiVisibility.showPresets && (
                 <div className="relative">
                   <button
                     onClick={() => setShowPresetsDropdown(!showPresetsDropdown)}
@@ -1809,7 +2159,7 @@ export default function App() {
                         className="fixed inset-0 z-40" 
                         onClick={() => setShowPresetsDropdown(false)} 
                       />
-                      <div className={`absolute bottom-full mb-2 left-0 z-50 rounded-lg border shadow-2xl p-2 w-80 backdrop-blur-md animate-in fade-in duration-150 ${
+                      <div className={`absolute bottom-full mb-2 left-0 z-50 rounded-lg border shadow-2xl p-2 w-80 animate-in fade-in duration-150 ${
                         theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-200' : 'bg-white border-slate-300 text-slate-800'
                       }`}>
                         <div className="flex items-center justify-between pb-1.5 border-b border-slate-600/40 mb-1.5">
@@ -1853,10 +2203,72 @@ export default function App() {
                     </>
                   )}
                 </div>
+                )}
 
                 <div className="text-xs text-slate-500 dark:text-slate-400 border-l border-slate-600/40 pl-3">
                   Нажмите <kbd className="px-1.5 py-0.5 rounded border text-[10px] bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 font-mono">Esc</kbd> чтобы выйти
                 </div>
+
+                <div className="h-4 w-px bg-slate-400/40 dark:bg-slate-600" />
+
+                {(uiVisibility.showSearchSql ?? true) && (
+                <button
+                  onClick={(e) => {
+                    const modal = e.currentTarget.closest('.fixed');
+                    const textarea = modal?.querySelector('textarea') || document.querySelector('textarea');
+                    if (textarea) {
+                      textarea.focus();
+                      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true }));
+                    }
+                  }}
+                  className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded transition-all ${
+                    theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                  }`}
+                  title="Поиск и замена текста (Ctrl+F / Ctrl+H / Ctrl+R)"
+                >
+                  <Search className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Поиск</span>
+                </button>
+                )}
+
+                <button
+                  onClick={() => setIsWrapSql(!isWrapSql)}
+                  className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded transition-all ${
+                    isWrapSql
+                      ? 'bg-blue-600 text-white font-bold'
+                      : theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                  }`}
+                  title="Перенос строки"
+                >
+                  <WrapText className="w-3.5 h-3.5" />
+                  <span>Перенос</span>
+                </button>
+
+                {uiVisibility.showFormatSql && (
+                <button
+                  onClick={handleFormatSql}
+                  className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded transition-all ${
+                    theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-700 hover:text-slate-900'
+                  }`}
+                  title="Форматировать SQL (Ctrl+Shift+F)"
+                >
+                  <AlignLeft className="w-3.5 h-3.5" />
+                  <span>Форматировать</span>
+                </button>
+                )}
+
+                {uiVisibility.showCopySql && (
+                <button
+                  onClick={handleCopySql}
+                  className={`flex items-center gap-1 text-xs px-2 py-1 font-medium transition-colors ${
+                    theme === 'dark' ? 'text-slate-300 hover:text-slate-100' : 'text-slate-800 hover:text-slate-950'
+                  }`}
+                  title="Скопировать SQL"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Copied!' : 'Copy SQL'}</span>
+                </button>
+                )}
               </div>
 
               <button
@@ -1880,6 +2292,7 @@ export default function App() {
         onClose={() => setShowSnippetsModal(false)}
         onInsertSnippet={handleInsertSnippet}
         theme={theme}
+        uiVisibility={uiVisibility}
       />
 
       {/* SETTINGS & HOTKEYS MODAL */}
@@ -1889,6 +2302,10 @@ export default function App() {
         theme={theme}
         hotkeys={hotkeys}
         onUpdateHotkeys={setHotkeys}
+        formatterSettings={formatterSettings}
+        onUpdateFormatterSettings={setFormatterSettings}
+        uiVisibility={uiVisibility}
+        onUpdateUiVisibility={setUiVisibility}
       />
 
       {/* VERSION HISTORY MODAL */}
@@ -1903,6 +2320,7 @@ export default function App() {
           handleVisualize(restoredSql, restoredDialect, direction);
         }}
         theme={theme}
+        uiVisibility={uiVisibility}
       />
 
     </div>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Keyboard, RotateCcw, Settings, Check, Command, Sparkles } from 'lucide-react';
+import { X, Keyboard, RotateCcw, Settings, AlignLeft, Eye, Download, Upload, Plus, Trash2, Edit3, Check, Code } from 'lucide-react';
+import { AutocompleteTemplate, DEFAULT_AUTOCOMPLETE_TEMPLATES, getCustomAutocompleteTemplates } from './SqlEditor';
 
 export interface HotkeyBinding {
   id: string;
@@ -7,6 +8,105 @@ export interface HotkeyBinding {
   description: string;
   category: 'Редактор' | 'Граф' | 'Общие';
   defaultKey: string;
+}
+
+export interface FormatterSettings {
+  keywordCase: 'upper' | 'lower' | 'preserve';
+  tabWidth: number;
+  useTabs: boolean;
+  expressionWidth: number;
+  denseOperators: boolean;
+}
+
+export interface UiVisibilitySettings {
+  showPresets: boolean;
+  showSnippets: boolean;
+  showHistory: boolean;
+  showSearchSql?: boolean;
+  showOpenFile: boolean;
+  showSaveFile: boolean;
+  showFormatSql: boolean;
+  showCopySql: boolean;
+  showMaximizeButton: boolean;
+  showLayoutDirection: boolean;
+  showSortLimitToggle: boolean;
+  showLineageFocus: boolean;
+  showMiniMapButton: boolean;
+  showThemeToggle: boolean;
+  showExportButton: boolean;
+  showGraphFooter: boolean;
+  // Snippets settings
+  showSnippetSearch: boolean;
+  showSnippetCategories: boolean;
+  showSnippetFavorites: boolean;
+  showSnippetCreateBtn: boolean;
+  // History settings
+  showHistorySearch: boolean;
+  showHistoryManualSnapshot: boolean;
+  showHistoryExport: boolean;
+  showHistoryDiff: boolean;
+}
+
+export const DEFAULT_FORMATTER_SETTINGS: FormatterSettings = {
+  keywordCase: 'upper',
+  tabWidth: 2,
+  useTabs: false,
+  expressionWidth: 120,
+  denseOperators: false,
+};
+
+export const DEFAULT_UI_VISIBILITY: UiVisibilitySettings = {
+  showPresets: true,
+  showSnippets: true,
+  showHistory: true,
+  showSearchSql: true,
+  showOpenFile: true,
+  showSaveFile: true,
+  showFormatSql: true,
+  showCopySql: true,
+  showMaximizeButton: true,
+  showLayoutDirection: true,
+  showSortLimitToggle: true,
+  showLineageFocus: true,
+  showMiniMapButton: true,
+  showThemeToggle: true,
+  showExportButton: true,
+  showGraphFooter: true,
+  showSnippetSearch: true,
+  showSnippetCategories: true,
+  showSnippetFavorites: true,
+  showSnippetCreateBtn: true,
+  showHistorySearch: true,
+  showHistoryManualSnapshot: true,
+  showHistoryExport: true,
+  showHistoryDiff: true,
+};
+
+const FORMATTER_STORAGE_KEY = 'sql_visualizer_formatter_v1';
+const UI_VISIBILITY_STORAGE_KEY = 'sql_visualizer_ui_visibility_v1';
+
+export function getSavedFormatterSettings(): FormatterSettings {
+  try {
+    const saved = localStorage.getItem(FORMATTER_STORAGE_KEY);
+    if (saved) {
+      return { ...DEFAULT_FORMATTER_SETTINGS, ...JSON.parse(saved) };
+    }
+  } catch (e) {
+    console.error('Failed to load formatter settings', e);
+  }
+  return DEFAULT_FORMATTER_SETTINGS;
+}
+
+export function getSavedUiVisibilitySettings(): UiVisibilitySettings {
+  try {
+    const saved = localStorage.getItem(UI_VISIBILITY_STORAGE_KEY);
+    if (saved) {
+      return { ...DEFAULT_UI_VISIBILITY, ...JSON.parse(saved) };
+    }
+  } catch (e) {
+    console.error('Failed to load UI visibility settings', e);
+  }
+  return DEFAULT_UI_VISIBILITY;
 }
 
 export const DEFAULT_HOTKEYS: HotkeyBinding[] = [
@@ -44,6 +144,27 @@ export const DEFAULT_HOTKEYS: HotkeyBinding[] = [
     description: 'Включить/выключить перенос длинных строк',
     category: 'Редактор',
     defaultKey: 'Alt+W'
+  },
+  {
+    id: 'searchSql',
+    label: 'Поиск в редакторе',
+    description: 'Открыть панель поиска по тексту запроса',
+    category: 'Редактор',
+    defaultKey: 'Ctrl+F'
+  },
+  {
+    id: 'replaceSql',
+    label: 'Замена в редакторе',
+    description: 'Открыть панель поиска и замены в редакторе',
+    category: 'Редактор',
+    defaultKey: 'Ctrl+H'
+  },
+  {
+    id: 'formatSql',
+    label: 'Форматировать SQL',
+    description: 'Автоматически красивое форматирование запроса',
+    category: 'Редактор',
+    defaultKey: 'Ctrl+Shift+F'
   },
   {
     id: 'openSnippets',
@@ -106,6 +227,10 @@ interface SettingsModalProps {
   theme: 'dark' | 'light';
   hotkeys: Record<string, string>;
   onUpdateHotkeys: (newHotkeys: Record<string, string>) => void;
+  formatterSettings: FormatterSettings;
+  onUpdateFormatterSettings: (newSettings: FormatterSettings) => void;
+  uiVisibility: UiVisibilitySettings;
+  onUpdateUiVisibility: (newSettings: UiVisibilitySettings) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -113,9 +238,80 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   theme,
   hotkeys,
-  onUpdateHotkeys
+  onUpdateHotkeys,
+  formatterSettings,
+  onUpdateFormatterSettings,
+  uiVisibility,
+  onUpdateUiVisibility
 }) => {
+  const [activeTab, setActiveTab] = useState<'formatter' | 'ui' | 'hotkeys'>('ui');
   const [listeningActionId, setListeningActionId] = useState<string | null>(null);
+
+  // Custom Autocomplete Templates State
+  const [templates, setTemplates] = useState<AutocompleteTemplate[]>(getCustomAutocompleteTemplates);
+  const [newKeyword, setNewKeyword] = useState<string>('');
+  const [newInsertion, setNewInsertion] = useState<string>('');
+  const [newDesc, setNewDesc] = useState<string>('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editKeyword, setEditKeyword] = useState<string>('');
+  const [editInsertion, setEditInsertion] = useState<string>('');
+  const [editDesc, setEditDesc] = useState<string>('');
+
+  const saveTemplatesToStorage = (newTpls: AutocompleteTemplate[]) => {
+    setTemplates(newTpls);
+    localStorage.setItem('sql_custom_autocomplete_templates', JSON.stringify(newTpls));
+    window.dispatchEvent(new Event('sql_templates_updated'));
+  };
+
+  const handleAddTemplate = () => {
+    if (!newKeyword.trim()) return;
+    const kw = newKeyword.trim().toUpperCase();
+    const newTpl: AutocompleteTemplate = {
+      id: `tpl-${Date.now()}`,
+      keyword: kw,
+      insertion: newInsertion.trim() || `${kw} `,
+      description: newDesc.trim() || undefined,
+    };
+    const updated = [...templates, newTpl];
+    saveTemplatesToStorage(updated);
+    setNewKeyword('');
+    setNewInsertion('');
+    setNewDesc('');
+  };
+
+  const handleDeleteTemplate = (id: string) => {
+    const updated = templates.filter(t => t.id !== id);
+    saveTemplatesToStorage(updated);
+  };
+
+  const handleStartEditTemplate = (tpl: AutocompleteTemplate) => {
+    setEditingId(tpl.id);
+    setEditKeyword(tpl.keyword);
+    setEditInsertion(tpl.insertion || '');
+    setEditDesc(tpl.description || '');
+  };
+
+  const handleSaveEditTemplate = () => {
+    if (!editingId || !editKeyword.trim()) return;
+    const kw = editKeyword.trim().toUpperCase();
+    const updated = templates.map(t => {
+      if (t.id === editingId) {
+        return {
+          ...t,
+          keyword: kw,
+          insertion: editInsertion.trim() || `${kw} `,
+          description: editDesc.trim() || undefined,
+        };
+      }
+      return t;
+    });
+    saveTemplatesToStorage(updated);
+    setEditingId(null);
+  };
+
+  const handleResetTemplatesToDefault = () => {
+    saveTemplatesToStorage(DEFAULT_AUTOCOMPLETE_TEMPLATES);
+  };
 
   useEffect(() => {
     if (!listeningActionId) return;
@@ -134,7 +330,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       if (e.altKey) parts.push('Alt');
       if (e.shiftKey) parts.push('Shift');
 
-      let keyName = e.key.toUpperCase();
+      let keyName = e.key ? e.key.toUpperCase() : '';
       if (e.code && e.code.startsWith('Key')) {
         keyName = e.code.slice(3).toUpperCase();
       } else if (e.code && e.code.startsWith('Digit')) {
@@ -164,19 +360,104 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleResetDefaults = () => {
-    const defaults: Record<string, string> = {};
-    DEFAULT_HOTKEYS.forEach((h) => {
-      defaults[h.id] = h.defaultKey;
-    });
-    onUpdateHotkeys(defaults);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
-    setListeningActionId(null);
+    if (activeTab === 'formatter') {
+      onUpdateFormatterSettings(DEFAULT_FORMATTER_SETTINGS);
+      localStorage.setItem(FORMATTER_STORAGE_KEY, JSON.stringify(DEFAULT_FORMATTER_SETTINGS));
+    } else if (activeTab === 'ui') {
+      onUpdateUiVisibility(DEFAULT_UI_VISIBILITY);
+      localStorage.setItem(UI_VISIBILITY_STORAGE_KEY, JSON.stringify(DEFAULT_UI_VISIBILITY));
+    } else {
+      const defaults: Record<string, string> = {};
+      DEFAULT_HOTKEYS.forEach((h) => {
+        defaults[h.id] = h.defaultKey;
+      });
+      onUpdateHotkeys(defaults);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+      setListeningActionId(null);
+    }
+  };
+
+  const handleExportLocalStorage = () => {
+    try {
+      const backupData: Record<string, string> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          const value = localStorage.getItem(key);
+          if (value !== null) {
+            backupData[key] = value;
+          }
+        }
+      }
+      const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      link.download = `sql_visualizer_backup_${dateStr}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Failed to export localStorage', e);
+      alert('Ошибка при экспорте данных');
+    }
+  };
+
+  const handleImportLocalStorage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const content = e.target?.result as string;
+        const data = JSON.parse(content);
+        if (typeof data !== 'object' || data === null) {
+          throw new Error('Invalid backup file format');
+        }
+
+        const storageItems: Record<string, unknown> = data.data && typeof data.data === 'object' ? data.data : data;
+
+        let importedCount = 0;
+        Object.entries(storageItems).forEach(([key, value]) => {
+          if (typeof value === 'string') {
+            localStorage.setItem(key, value);
+            importedCount++;
+          } else if (value !== null && typeof value === 'object') {
+            localStorage.setItem(key, JSON.stringify(value));
+            importedCount++;
+          }
+        });
+
+        alert(`Успешно импортировано ${importedCount} элементов. Страница перезагружается...`);
+        window.location.reload();
+      } catch (err) {
+        console.error('Failed to import localStorage', err);
+        alert('Ошибка при импорте. Проверьте формат JSON файла.');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
+
+  const updateFormatter = (partial: Partial<FormatterSettings>) => {
+    const updated = { ...formatterSettings, ...partial };
+    onUpdateFormatterSettings(updated);
+    localStorage.setItem(FORMATTER_STORAGE_KEY, JSON.stringify(updated));
+  };
+
+  const toggleUiElement = (key: keyof UiVisibilitySettings) => {
+    const updated = { ...uiVisibility, [key]: !uiVisibility[key] };
+    onUpdateUiVisibility(updated);
+    localStorage.setItem(UI_VISIBILITY_STORAGE_KEY, JSON.stringify(updated));
   };
 
   const categories: ('Редактор' | 'Граф' | 'Общие')[] = ['Редактор', 'Граф', 'Общие'];
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-md p-4 sm:p-6 flex items-center justify-center animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 p-4 sm:p-6 flex items-center justify-center animate-in fade-in duration-200">
       <div
         className={`w-full max-w-2xl border rounded-xl flex flex-col shadow-2xl overflow-hidden max-h-[90vh] transition-colors ${
           theme === 'dark'
@@ -186,13 +467,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       >
         {/* HEADER */}
         <div
-          className={`flex items-center justify-between px-5 py-3.5 border-b shrink-0 ${
+          className={`flex items-center justify-between px-5 py-3 border-b shrink-0 ${
             theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'
           }`}
         >
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-3">
             <Settings className="w-5 h-5 text-blue-500" />
-            <h2 className="font-bold text-base">Настройки и горячие клавиши</h2>
+            <div className="flex gap-1 bg-slate-900/30 p-1 rounded-lg border border-slate-700/50">
+              <button
+                onClick={() => setActiveTab('ui')}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                  activeTab === 'ui'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : theme === 'dark' ? 'text-slate-400 hover:text-slate-200' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>Элементы UI</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('formatter')}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                  activeTab === 'formatter'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : theme === 'dark' ? 'text-slate-400 hover:text-slate-200' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <AlignLeft className="w-3.5 h-3.5" />
+                <span>Форматирование</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('hotkeys')}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-bold transition-all ${
+                  activeTab === 'hotkeys'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : theme === 'dark' ? 'text-slate-400 hover:text-slate-200' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Keyboard className="w-3.5 h-3.5" />
+                <span>Горячие клавиши</span>
+              </button>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -208,91 +523,651 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* BODY */}
         <div className="flex-1 p-5 overflow-y-auto space-y-6">
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <p className={`text-xs ${theme === 'dark' ? 'text-slate-400' : 'text-slate-700 font-medium'}`}>
-                Кликните по комбинации, чтобы назначить собственную горячую клавишу.
-              </p>
-              <button
-                onClick={handleResetDefaults}
-                className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors ${
-                  theme === 'dark'
-                    ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-slate-100'
-                    : 'bg-slate-100 border-slate-300 text-slate-900 font-bold hover:bg-slate-200 hover:text-slate-950'
-                }`}
-                title="Сбросить все хоткеи к исходным значениям"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-amber-500" />
-                <span>Сбросить по умолчанию</span>
-              </button>
-            </div>
-
-            {categories.map((cat) => {
-              const items = DEFAULT_HOTKEYS.filter((h) => h.category === cat);
-              if (items.length === 0) return null;
-
-              return (
-                <div key={cat} className="space-y-2">
-                  <h3 className={`text-xs uppercase font-bold tracking-wider border-b pb-1 ${
-                    theme === 'dark' ? 'text-slate-400 border-slate-700/50' : 'text-slate-900 border-slate-300'
+          {activeTab === 'ui' ? (
+            <div className="space-y-6">
+              {/* EDITOR PANEL UI TOGGLES */}
+              <div className="space-y-3">
+                <div className={`flex items-center justify-between border-b pb-1 ${
+                  theme === 'dark' ? 'border-slate-700/50' : 'border-slate-300'
+                }`}>
+                  <h3 className={`text-xs uppercase font-bold tracking-wider ${
+                    theme === 'dark' ? 'text-slate-400' : 'text-slate-900'
                   }`}>
-                    {cat}
+                    Панель редактора SQL (слева)
                   </h3>
-                  <div className="space-y-1.5">
-                    {items.map((item) => {
-                      const currentKey = hotkeys[item.id] || item.defaultKey;
-                      const isListening = listeningActionId === item.id;
-
-                      return (
-                        <div
-                          key={item.id}
-                          className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
-                            isListening
-                              ? 'border-amber-500 bg-amber-500/10'
-                              : theme === 'dark'
-                              ? 'bg-slate-800/40 border-slate-700/60 hover:bg-slate-800/80'
-                              : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          <div className="pr-4">
-                            <div className={`font-semibold text-xs ${
-                              theme === 'dark' ? 'text-slate-100' : 'text-slate-900 font-bold'
-                            }`}>
-                              {item.label}
-                            </div>
-                            <div className={`text-[11px] ${
-                              theme === 'dark' ? 'text-slate-400' : 'text-slate-700'
-                            }`}>{item.description}</div>
-                          </div>
-
-                          <button
-                            onClick={() => setListeningActionId(isListening ? null : item.id)}
-                            className={`px-3 py-1.5 rounded font-mono text-xs font-bold border shadow-xs transition-all shrink-0 min-w-[100px] text-center ${
-                              isListening
-                                ? 'bg-amber-500 text-slate-900 border-amber-400 animate-pulse'
-                                : theme === 'dark'
-                                ? 'bg-slate-750 hover:bg-slate-700 border-slate-600 text-blue-400 hover:text-blue-300'
-                                : 'bg-white hover:bg-slate-100 border-slate-300 text-blue-800 font-bold shadow-2xs'
-                            }`}
-                          >
-                            {isListening ? 'Нажмите клавиши...' : currentKey}
-                          </button>
+                  <button
+                    onClick={handleResetDefaults}
+                    className={`flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                      theme === 'dark'
+                        ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-slate-100'
+                        : 'bg-slate-100 border-slate-300 text-slate-900 font-bold hover:bg-slate-200 hover:text-slate-950'
+                    }`}
+                    title="Сбросить параметры к исходным значениям"
+                  >
+                    <RotateCcw className="w-3 h-3 text-amber-500" />
+                    <span>Сбросить</span>
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {[
+                    { key: 'showSearchSql', label: 'Кнопка «Поиск»', desc: 'Поиск и замена текста в редакторе (Ctrl+F)' },
+                    { key: 'showOpenFile', label: 'Открыть файл (.sql)', desc: 'Загрузка файла с диска' },
+                    { key: 'showSaveFile', label: 'Сохранить файл (.sql)', desc: 'Скачивание текущего SQL' },
+                    { key: 'showSnippets', label: 'Сниппеты и Конструктор', desc: 'Библиотека готовых фрагментов' },
+                    { key: 'showHistory', label: 'История версий', desc: 'История снимков и автосохранений' },
+                    { key: 'showMaximizeButton', label: 'Кнопка «Развернуть»', desc: 'Разворот редактора на весь экран' },
+                    { key: 'showPresets', label: 'Кнопка «Пресеты»', desc: 'Быстрый выбор готовых SQL запросов' },
+                    { key: 'showFormatSql', label: 'Кнопка «Формат»', desc: 'Авто-форматирование SQL' },
+                    { key: 'showCopySql', label: 'Кнопка «Copy SQL»', desc: 'Копирование текста в буфер обмена' },
+                  ].map((item) => {
+                    const isChecked = uiVisibility[item.key as keyof UiVisibilitySettings];
+                    return (
+                      <label
+                        key={item.key}
+                        className={`flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                          isChecked
+                            ? theme === 'dark'
+                              ? 'bg-slate-800/80 border-blue-500/50 text-slate-100'
+                              : 'bg-blue-50/60 border-blue-300 text-slate-900'
+                            : theme === 'dark'
+                              ? 'bg-slate-850/40 border-slate-700/50 text-slate-400 opacity-60'
+                              : 'bg-slate-50 border-slate-200 text-slate-500 opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleUiElement(item.key as keyof UiVisibilitySettings)}
+                          className="mt-0.5 rounded border-slate-600 text-blue-600 focus:ring-blue-500 w-4 h-4 shrink-0"
+                        />
+                        <div>
+                          <div className="text-xs font-semibold">{item.label}</div>
+                          <div className="text-[10px] opacity-75">{item.desc}</div>
                         </div>
-                      );
-                    })}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* GRAPH CANVAS UI TOGGLES */}
+              <div className="space-y-3">
+                <h3 className={`text-xs uppercase font-bold tracking-wider border-b pb-1 ${
+                  theme === 'dark' ? 'text-slate-400 border-slate-700/50' : 'text-slate-900 border-slate-300'
+                }`}>
+                  Панель графа и холста (справа)
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {[
+                    { key: 'showLayoutDirection', label: 'Переключатель Layout', desc: 'Ориентация Left-Right / Top-Bottom' },
+                    { key: 'showSortLimitToggle', label: 'Кнопки Sort / Limit Nodes', desc: 'Фильтры отображения узлов' },
+                    { key: 'showLineageFocus', label: 'Кнопка Lineage Focus', desc: 'Подсветка связей выделенного узла' },
+                    { key: 'showMiniMapButton', label: 'Кнопка Миникарты', desc: 'Переключатель видимости миникарты' },
+                    { key: 'showThemeToggle', label: 'Переключатель темы', desc: 'Смена Dark / Light темы' },
+                    { key: 'showExportButton', label: 'Кнопка «Export» графа', desc: 'Экспорт схемы в PNG, SVG, JSON' },
+                    { key: 'showGraphFooter', label: 'Подвал графа (Детали узлов)', desc: 'Нижняя панель информации о выбранном узле' },
+                  ].map((item) => {
+                    const isChecked = uiVisibility[item.key as keyof UiVisibilitySettings];
+                    return (
+                      <label
+                        key={item.key}
+                        className={`flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                          isChecked
+                            ? theme === 'dark'
+                              ? 'bg-slate-800/80 border-blue-500/50 text-slate-100'
+                              : 'bg-blue-50/60 border-blue-300 text-slate-900'
+                            : theme === 'dark'
+                              ? 'bg-slate-850/40 border-slate-700/50 text-slate-400 opacity-60'
+                              : 'bg-slate-50 border-slate-200 text-slate-500 opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleUiElement(item.key as keyof UiVisibilitySettings)}
+                          className="mt-0.5 rounded border-slate-600 text-blue-600 focus:ring-blue-500 w-4 h-4 shrink-0"
+                        />
+                        <div>
+                          <div className="text-xs font-semibold">{item.label}</div>
+                          <div className="text-[10px] opacity-75">{item.desc}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* SNIPPETS LIBRARY UI TOGGLES */}
+              <div className="space-y-3">
+                <h3 className={`text-xs uppercase font-bold tracking-wider border-b pb-1 ${
+                  theme === 'dark' ? 'text-slate-400 border-slate-700/50' : 'text-slate-900 border-slate-300'
+                }`}>
+                  Библиотека сниппетов (Окно)
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {[
+                    { key: 'showSnippetSearch', label: 'Поиск по сниппетам', desc: 'Поле глобального поиска сниппетов' },
+                    { key: 'showSnippetCategories', label: 'Категории сниппетов', desc: 'Вкладки диалектов и разделов' },
+                    { key: 'showSnippetFavorites', label: 'Избранное', desc: 'Возможность отмечать сниппеты звездочкой' },
+                    { key: 'showSnippetCreateBtn', label: 'Конструктор сниппетов', desc: 'Кнопка и форма «+ Создать сниппет»' },
+                  ].map((item) => {
+                    const isChecked = uiVisibility[item.key as keyof UiVisibilitySettings];
+                    return (
+                      <label
+                        key={item.key}
+                        className={`flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                          isChecked
+                            ? theme === 'dark'
+                              ? 'bg-slate-800/80 border-blue-500/50 text-slate-100'
+                              : 'bg-blue-50/60 border-blue-300 text-slate-900'
+                            : theme === 'dark'
+                              ? 'bg-slate-850/40 border-slate-700/50 text-slate-400 opacity-60'
+                              : 'bg-slate-50 border-slate-200 text-slate-500 opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleUiElement(item.key as keyof UiVisibilitySettings)}
+                          className="mt-0.5 rounded border-slate-600 text-blue-600 focus:ring-blue-500 w-4 h-4 shrink-0"
+                        />
+                        <div>
+                          <div className="text-xs font-semibold">{item.label}</div>
+                          <div className="text-[10px] opacity-75">{item.desc}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* HISTORY MODAL UI TOGGLES */}
+              <div className="space-y-3">
+                <h3 className={`text-xs uppercase font-bold tracking-wider border-b pb-1 ${
+                  theme === 'dark' ? 'text-slate-400 border-slate-700/50' : 'text-slate-900 border-slate-300'
+                }`}>
+                  История версий (Окно)
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {[
+                    { key: 'showHistorySearch', label: 'Поиск по истории', desc: 'Строка поиска по прошлым версиям' },
+                    { key: 'showHistoryManualSnapshot', label: 'Ручной снимок', desc: 'Поле ввода и кнопка «+ Снимок»' },
+                    { key: 'showHistoryExport', label: 'Экспорт истории', desc: 'Кнопка сохранения всех снимков в JSON' },
+                    { key: 'showHistoryDiff', label: 'Сравнение кодов (Diff)', desc: 'Переключатель просмотра изменений' },
+                  ].map((item) => {
+                    const isChecked = uiVisibility[item.key as keyof UiVisibilitySettings];
+                    return (
+                      <label
+                        key={item.key}
+                        className={`flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                          isChecked
+                            ? theme === 'dark'
+                              ? 'bg-slate-800/80 border-blue-500/50 text-slate-100'
+                              : 'bg-blue-50/60 border-blue-300 text-slate-900'
+                            : theme === 'dark'
+                              ? 'bg-slate-850/40 border-slate-700/50 text-slate-400 opacity-60'
+                              : 'bg-slate-50 border-slate-200 text-slate-500 opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleUiElement(item.key as keyof UiVisibilitySettings)}
+                          className="mt-0.5 rounded border-slate-600 text-blue-600 focus:ring-blue-500 w-4 h-4 shrink-0"
+                        />
+                        <div>
+                          <div className="text-xs font-semibold">{item.label}</div>
+                          <div className="text-[10px] opacity-75">{item.desc}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : activeTab === 'formatter' ? (
+            <div className="space-y-5">
+              {/* EXPRESSION WIDTH / COLUMNS ON ONE LINE */}
+              <div className={`p-4 rounded-xl border space-y-3 ${
+                theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <label className={`font-bold text-xs block ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>
+                      Перечисление столбцов и выражений в одну строку
+                    </label>
+                    <p className={`text-[11px] mt-0.5 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
+                      Управляет порогом переноса строк (Expression Width). Повысьте значение, чтобы список столбцов `SELECT a, b, c` оставался в одну компактную строку.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleResetDefaults}
+                    className={`flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded border transition-colors shrink-0 ${
+                      theme === 'dark'
+                        ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-slate-100'
+                        : 'bg-slate-100 border-slate-300 text-slate-900 font-bold hover:bg-slate-200 hover:text-slate-950'
+                    }`}
+                    title="Сбросить параметры к исходным значениям"
+                  >
+                    <RotateCcw className="w-3 h-3 text-amber-500" />
+                    <span>Сбросить</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { width: 50, label: '50 симв.', desc: 'С переносом каждого столбца' },
+                    { width: 120, label: '120 симв.', desc: 'Компактно (в одну строку)' },
+                    { width: 200, label: '200 симв.', desc: 'Ультра компактно' }
+                  ].map((preset) => (
+                    <button
+                      key={preset.width}
+                      onClick={() => updateFormatter({ expressionWidth: preset.width })}
+                      className={`flex-1 min-w-[140px] px-3 py-2 rounded-lg border text-left transition-all ${
+                        formatterSettings.expressionWidth === preset.width
+                          ? 'border-blue-500 bg-blue-500/15 text-blue-400 font-bold shadow-xs'
+                          : theme === 'dark'
+                          ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                          : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
+                      }`}
+                    >
+                      <div className="text-xs font-bold">{preset.label}</div>
+                      <div className="text-[10px] opacity-75">{preset.desc}</div>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3 pt-1">
+                  <span className={`text-xs ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>Свой порог ширины:</span>
+                  <input
+                    type="number"
+                    min={20}
+                    max={500}
+                    value={formatterSettings.expressionWidth}
+                    onChange={(e) => updateFormatter({ expressionWidth: Math.max(20, parseInt(e.target.value) || 50) })}
+                    className={`w-24 px-2.5 py-1 text-xs font-mono rounded border ${
+                      theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-slate-300 text-slate-900'
+                    }`}
+                  />
+                  <span className="text-[11px] text-slate-500">символов</span>
+                </div>
+              </div>
+
+              {/* KEYWORD CASE */}
+              <div className={`p-4 rounded-xl border space-y-3 ${
+                theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <div>
+                  <label className={`font-bold text-xs block ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>
+                    Регистр ключевых слов (SELECT, FROM, WHERE...)
+                  </label>
+                  <p className={`text-[11px] mt-0.5 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
+                    Приведение ключевых слов к верхнему или нижнему регистру
+                  </p>
+                </div>
+
+                <div className="flex gap-2">
+                  {[
+                    { id: 'upper', label: 'UPPERCASE', example: 'SELECT * FROM' },
+                    { id: 'lower', label: 'lowercase', example: 'select * from' },
+                    { id: 'preserve', label: 'Сохранять', example: 'как написано' }
+                  ].map((opt) => (
+                    <button
+                      key={opt.id}
+                      onClick={() => updateFormatter({ keywordCase: opt.id as any })}
+                      className={`flex-1 px-3 py-2 rounded-lg border text-center transition-all ${
+                        formatterSettings.keywordCase === opt.id
+                          ? 'border-blue-500 bg-blue-500/15 text-blue-400 font-bold shadow-xs'
+                          : theme === 'dark'
+                          ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                          : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
+                      }`}
+                    >
+                      <div className="text-xs font-bold">{opt.label}</div>
+                      <div className="text-[10px] opacity-75 font-mono">{opt.example}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* INDENTATION & OPERATORS */}
+              <div className={`p-4 rounded-xl border grid grid-cols-1 sm:grid-cols-2 gap-4 ${
+                theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <div>
+                  <label className={`font-bold text-xs block mb-1.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>
+                    Размер отступа
+                  </label>
+                  <select
+                    value={formatterSettings.useTabs ? 'tab' : formatterSettings.tabWidth}
+                    onChange={(e) => {
+                      if (e.target.value === 'tab') {
+                        updateFormatter({ useTabs: true, tabWidth: 2 });
+                      } else {
+                        updateFormatter({ useTabs: false, tabWidth: parseInt(e.target.value) || 2 });
+                      }
+                    }}
+                    className={`w-full px-3 py-1.5 text-xs rounded border ${
+                      theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-slate-300 text-slate-900'
+                    }`}
+                  >
+                    <option value="2">2 пробела</option>
+                    <option value="4">4 пробела</option>
+                    <option value="tab">Табуляция (Tab)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className={`font-bold text-xs block mb-1.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>
+                    Плотные операторы
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer mt-2">
+                    <input
+                      type="checkbox"
+                      checked={formatterSettings.denseOperators}
+                      onChange={(e) => updateFormatter({ denseOperators: e.target.checked })}
+                      className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                    />
+                    <span className={`text-xs ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
+                      Без пробелов вокруг операторов (`a+b`)
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* AUTOCOMPLETE TEMPLATES MANAGER */}
+              <div className={`p-4 rounded-xl border space-y-4 ${
+                theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className={`font-bold text-xs block ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>
+                      Шаблоны автодополнения SQL (Autocomplete Snippets)
+                    </label>
+                    <p className={`text-[11px] mt-0.5 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
+                      Добавляйте, редактируйте и удаляйте пользовательские шаблоны для выпадающего списка автокомплита
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResetTemplatesToDefault}
+                    className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded border font-semibold transition-colors shrink-0 ${
+                      theme === 'dark'
+                        ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-slate-100'
+                        : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
+                    }`}
+                    title="Восстановить стандартные шаблоны"
+                  >
+                    <RotateCcw className="w-3 h-3 text-amber-500" />
+                    <span>Сбросить шаблоны</span>
+                  </button>
+                </div>
+
+                {/* ADD NEW TEMPLATE FORM */}
+                <div className={`p-3 rounded-lg border space-y-2.5 ${
+                  theme === 'dark' ? 'bg-slate-900/60 border-slate-700/60' : 'bg-white border-slate-200'
+                }`}>
+                  <div className="text-xs font-bold flex items-center gap-1.5 text-blue-500">
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Добавить новый шаблон</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      type="text"
+                      placeholder="Триггер (напр. SELECT)"
+                      value={newKeyword}
+                      onChange={(e) => setNewKeyword(e.target.value)}
+                      className={`px-2.5 py-1.5 text-xs font-mono rounded border outline-none ${
+                        theme === 'dark' ? 'bg-slate-800 border-slate-700 text-slate-200 focus:border-blue-500' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
+                      }`}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Текст вставки (напр. SELECT * FROM )"
+                      value={newInsertion}
+                      onChange={(e) => setNewInsertion(e.target.value)}
+                      className={`px-2.5 py-1.5 text-xs font-mono rounded border outline-none ${
+                        theme === 'dark' ? 'bg-slate-800 border-slate-700 text-slate-200 focus:border-blue-500' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
+                      }`}
+                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Описание (необязательно)"
+                        value={newDesc}
+                        onChange={(e) => setNewDesc(e.target.value)}
+                        className={`flex-1 px-2.5 py-1.5 text-xs rounded border outline-none ${
+                          theme === 'dark' ? 'bg-slate-800 border-slate-700 text-slate-200 focus:border-blue-500' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddTemplate}
+                        disabled={!newKeyword.trim()}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs rounded transition-colors shrink-0 flex items-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Добавить</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+
+                {/* TEMPLATES LIST */}
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {templates.map((tpl) => (
+                    <div
+                      key={tpl.id}
+                      className={`p-2.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono ${
+                        theme === 'dark' ? 'bg-slate-850/70 border-slate-700/60' : 'bg-white border-slate-250 shadow-2xs'
+                      }`}
+                    >
+                      {editingId === tpl.id ? (
+                        <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2 items-center w-full">
+                          <input
+                            type="text"
+                            value={editKeyword}
+                            onChange={(e) => setEditKeyword(e.target.value)}
+                            className={`px-2 py-1 text-xs font-mono rounded border ${
+                              theme === 'dark' ? 'bg-slate-900 border-slate-600 text-slate-100' : 'bg-slate-50 border-slate-300 text-slate-900'
+                            }`}
+                          />
+                          <input
+                            type="text"
+                            value={editInsertion}
+                            onChange={(e) => setEditInsertion(e.target.value)}
+                            className={`px-2 py-1 text-xs font-mono rounded border ${
+                              theme === 'dark' ? 'bg-slate-900 border-slate-600 text-slate-100' : 'bg-slate-50 border-slate-300 text-slate-900'
+                            }`}
+                          />
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={editDesc}
+                              onChange={(e) => setEditDesc(e.target.value)}
+                              className={`flex-1 px-2 py-1 text-xs rounded border ${
+                                theme === 'dark' ? 'bg-slate-900 border-slate-600 text-slate-100' : 'bg-slate-50 border-slate-300 text-slate-900'
+                              }`}
+                            />
+                            <button
+                              type="button"
+                              onClick={handleSaveEditTemplate}
+                              className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-500 transition-colors"
+                              title="Сохранить изменения"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingId(null)}
+                              className="p-1 bg-slate-600 text-white rounded hover:bg-slate-500 transition-colors"
+                              title="Отмена"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2 overflow-hidden flex-1">
+                            <Code className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                            <span className="font-bold text-blue-400 shrink-0">{tpl.keyword}</span>
+                            <span className={`text-[11px] truncate ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
+                              → {tpl.insertion || tpl.keyword}
+                            </span>
+                            {tpl.description && (
+                              <span className={`text-[10px] italic truncate shrink-0 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+                                ({tpl.description})
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0 self-end sm:self-auto">
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditTemplate(tpl)}
+                              className={`p-1 rounded transition-colors ${
+                                theme === 'dark' ? 'hover:bg-slate-700 text-slate-400 hover:text-slate-200' : 'hover:bg-slate-100 text-slate-500 hover:text-slate-800'
+                              }`}
+                              title="Редактировать шаблон"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteTemplate(tpl.id)}
+                              className="p-1 rounded text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors"
+                              title="Удалить шаблон"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {categories.map((cat, index) => {
+                const items = DEFAULT_HOTKEYS.filter((h) => h.category === cat);
+                if (items.length === 0) return null;
+
+                return (
+                  <div key={cat} className="space-y-2">
+                    <div className={`flex items-center justify-between border-b pb-1 ${
+                      theme === 'dark' ? 'border-slate-700/50' : 'border-slate-300'
+                    }`}>
+                      <h3 className={`text-xs uppercase font-bold tracking-wider ${
+                        theme === 'dark' ? 'text-slate-400' : 'text-slate-900'
+                      }`}>
+                        {cat}
+                      </h3>
+                      {index === 0 && (
+                        <button
+                          onClick={handleResetDefaults}
+                          className={`flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                            theme === 'dark'
+                              ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-slate-100'
+                              : 'bg-slate-100 border-slate-300 text-slate-900 font-bold hover:bg-slate-200 hover:text-slate-950'
+                          }`}
+                          title="Сбросить параметры к исходным значениям"
+                        >
+                          <RotateCcw className="w-3 h-3 text-amber-500" />
+                          <span>Сбросить</span>
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      {items.map((item) => {
+                        const currentKey = hotkeys[item.id] || item.defaultKey;
+                        const isListening = listeningActionId === item.id;
+
+                        return (
+                          <div
+                            key={item.id}
+                            className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
+                              isListening
+                                ? 'border-amber-500 bg-amber-500/10'
+                                : theme === 'dark'
+                                ? 'bg-slate-800/40 border-slate-700/60 hover:bg-slate-800/80'
+                                : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            <div className="pr-4">
+                              <div className={`font-semibold text-xs ${
+                                theme === 'dark' ? 'text-slate-100' : 'text-slate-900 font-bold'
+                              }`}>
+                                {item.label}
+                              </div>
+                              <div className={`text-[11px] ${
+                                theme === 'dark' ? 'text-slate-400' : 'text-slate-700'
+                              }`}>{item.description}</div>
+                            </div>
+
+                            <button
+                              onClick={() => setListeningActionId(isListening ? null : item.id)}
+                              className={`px-3 py-1.5 rounded font-mono text-xs font-bold border shadow-xs transition-all shrink-0 min-w-[100px] text-center ${
+                                isListening
+                                  ? 'bg-amber-500 text-slate-900 border-amber-400 animate-pulse'
+                                  : theme === 'dark'
+                                  ? 'bg-slate-750 hover:bg-slate-700 border-slate-600 text-blue-400 hover:text-blue-300'
+                                  : 'bg-white hover:bg-slate-100 border-slate-300 text-blue-800 font-bold shadow-2xs'
+                              }`}
+                            >
+                              {isListening ? 'Нажмите клавиши...' : currentKey}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* FOOTER */}
         <div
-          className={`p-3.5 px-5 border-t flex items-center justify-end shrink-0 ${
+          className={`p-3.5 px-5 border-t flex items-center justify-between shrink-0 gap-3 ${
             theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'
           }`}
         >
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportLocalStorage}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition-all ${
+                theme === 'dark'
+                  ? 'bg-slate-750 hover:bg-slate-700 border-slate-600 text-slate-200'
+                  : 'bg-white hover:bg-slate-50 border-slate-300 text-slate-800 shadow-2xs'
+              }`}
+              title="Экспортировать все настройки, сниппеты и историю в JSON файл"
+            >
+              <Download className="w-3.5 h-3.5 text-blue-500" />
+              <span>Экспорт данных</span>
+            </button>
+
+            <label
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition-all cursor-pointer ${
+                theme === 'dark'
+                  ? 'bg-slate-750 hover:bg-slate-700 border-slate-600 text-slate-200'
+                  : 'bg-white hover:bg-slate-50 border-slate-300 text-slate-800 shadow-2xs'
+              }`}
+              title="Импортировать резервную копию JSON для переноса на другой ПК"
+            >
+              <Upload className="w-3.5 h-3.5 text-emerald-500" />
+              <span>Импорт данных</span>
+              <input
+                type="file"
+                accept=".json"
+                onChange={handleImportLocalStorage}
+                className="hidden"
+              />
+            </label>
+          </div>
+
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs rounded-md shadow-sm transition-colors"
@@ -304,3 +1179,4 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     </div>
   );
 };
+
