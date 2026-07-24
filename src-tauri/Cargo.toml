@@ -1,10 +1,10 @@
 [package]
 name = "sql-visualizer"
-version = "1.0.0"
-description = "SQL Flow Visualizer"
+version = "3.0"
+description = "SQL Visualizer"
 authors = [""]
 license = "MIT"
-edition = ""
+edition = "2021"
 rust-version = "1.60"
 
 [build-dependencies]
